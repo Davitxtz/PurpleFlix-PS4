@@ -12,6 +12,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout OpenOrbis (somente para obter right.sprx)
+        uses: actions/checkout@v4
+        with:
+          repository: OpenOrbis/OpenOrbis-PS4-Toolchain
+          ref: v0.5.4
+          path: oo-toolchain
+
       - name: Dependências do host (pacman do PacBrew)
         run: |
           sudo apt-get update
@@ -43,6 +50,16 @@ jobs:
       - name: Gerar ícone provisório
         run: python3 tools/make_icon.py data/sce_sys/icon0.png
 
+      - name: Incluir right.sprx no pacote
+        run: |
+          SPRX=$(find /opt/pacbrew oo-toolchain -iname 'right.sprx' 2>/dev/null | head -1)
+          echo "right.sprx encontrado em: ${SPRX:-NENHUM}"
+          test -n "$SPRX"
+          mkdir -p data/sce_sys/about
+          cp -v "$SPRX" data/sce_sys/about/right.sprx
+          echo "== conteúdo de data/ =="
+          find data -type f -exec ls -l {} \;
+
       - name: Compilar e empacotar
         shell: bash
         run: |
@@ -70,8 +87,6 @@ jobs:
         if: failure()
         run: |
           echo "== toolchain =="; ls /opt/pacbrew/ps4/openorbis 2>&1 | head -50
+          echo "== right.sprx =="; find /opt/pacbrew oo-toolchain -iname '*right*' 2>/dev/null | head
           echo "== add_pkg =="; grep -rn "add_pkg" /opt/pacbrew/ps4/openorbis 2>/dev/null | head -20
           echo "== sdl2 =="; find /opt/pacbrew -iname 'sdl2.pc' -o -iname 'SDL.h' 2>/dev/null | head
-          echo "== headers de pad =="; find /opt/pacbrew -iname 'Pad.h' -o -iname 'UserService.h' 2>/dev/null | head
-          P=$(find /opt/pacbrew -iname 'Pad.h' 2>/dev/null | head -1)
-          [ -n "$P" ] && grep -n "scePadInit\|scePadOpen\|scePadReadState" "$P" | head
