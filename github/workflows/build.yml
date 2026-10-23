@@ -1,0 +1,77 @@
+name: Build PurpleFlix PKG
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependências do host (pacman do PacBrew)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pacman-package-manager makepkg libarchive-tools build-essential \
+            autoconf automake libtool cmake ninja-build nasm git curl ca-certificates \
+            python3 python3-setuptools pkg-config zip unzip xz-utils file
+
+      - name: Configurar repositório PacBrew
+        run: |
+          CONF="$RUNNER_TEMP/pacbrew.conf"
+          if [ -f /etc/pacman.conf ]; then
+            cp /etc/pacman.conf "$CONF"
+          else
+            printf '[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\nLocalFileSigLevel = Optional\n' > "$CONF"
+          fi
+          if ! grep -q '^\[pacbrew\]' "$CONF"; then
+            printf '\n[pacbrew]\nSigLevel = Optional TrustAll\nServer = https://pacman.mydedibox.fr/pacbrew/packages/\n' >> "$CONF"
+          fi
+
+      - name: Instalar OpenOrbis + SDL2 (PacBrew)
+        run: |
+          CONF="$RUNNER_TEMP/pacbrew.conf"
+          sudo pacman --config "$CONF" -Sy --noconfirm
+          sudo pacman --config "$CONF" -S --needed --noconfirm \
+            ps4-openorbis ps4-openorbis-portlibs ps4-openorbis-sdl2
+          test -f /opt/pacbrew/ps4/openorbis/ps4vars.sh
+
+      - name: Gerar ícone provisório
+        run: python3 tools/make_icon.py data/sce_sys/icon0.png
+
+      - name: Compilar e empacotar
+        shell: bash
+        run: |
+          source /opt/pacbrew/ps4/openorbis/ps4vars.sh
+          mkdir -p cmake-build
+          cd cmake-build
+          openorbis-cmake -G "Unix Makefiles" ../
+          make purpleflix_pkg VERBOSE=1
+
+      - name: Coletar PKG
+        run: |
+          mkdir -p dist
+          find cmake-build -name '*.pkg' -exec cp -v {} dist/ \;
+          ls -l dist
+          test -n "$(ls dist/*.pkg 2>/dev/null)"
+          cd dist && sha256sum *.pkg > SHA256SUMS
+
+      - name: Enviar artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: PurpleFlix-PS4-pkg
+          path: dist/
+
+      - name: Diagnóstico (só roda se algo falhar)
+        if: failure()
+        run: |
+          echo "== toolchain =="; ls /opt/pacbrew/ps4/openorbis 2>&1 | head -50
+          echo "== add_pkg =="; grep -rn "add_pkg" /opt/pacbrew/ps4/openorbis 2>/dev/null | head -20
+          echo "== sdl2 =="; find /opt/pacbrew -iname 'sdl2.pc' -o -iname 'SDL.h' 2>/dev/null | head
+          echo "== headers de pad =="; find /opt/pacbrew -iname 'Pad.h' -o -iname 'UserService.h' 2>/dev/null | head
+          P=$(find /opt/pacbrew -iname 'Pad.h' 2>/dev/null | head -1)
+          [ -n "$P" ] && grep -n "scePadInit\|scePadOpen\|scePadReadState" "$P" | head
