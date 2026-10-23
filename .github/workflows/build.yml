@@ -12,7 +12,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout OpenOrbis (somente para obter right.sprx)
+      - name: Checkout OpenOrbis (para obter right.sprx e módulos)
         uses: actions/checkout@v4
         with:
           repository: OpenOrbis/OpenOrbis-PS4-Toolchain
@@ -50,13 +50,22 @@ jobs:
       - name: Gerar ícone provisório
         run: python3 tools/make_icon.py data/sce_sys/icon0.png
 
-      - name: Incluir right.sprx no pacote
+      - name: Incluir right.sprx e módulos libc no pacote
         run: |
-          SPRX=$(find /opt/pacbrew oo-toolchain -iname 'right.sprx' 2>/dev/null | head -1)
-          echo "right.sprx encontrado em: ${SPRX:-NENHUM}"
+          find_one() { find /opt/pacbrew oo-toolchain -iname "$1" 2>/dev/null | head -1; }
+          SPRX=$(find_one right.sprx)
+          LIBC=$(find_one libc.prx)
+          FIOS=$(find_one libSceFios2.prx)
+          echo "right.sprx:      ${SPRX:-NENHUM}"
+          echo "libc.prx:        ${LIBC:-NENHUM}"
+          echo "libSceFios2.prx: ${FIOS:-NENHUM}"
           test -n "$SPRX"
-          mkdir -p data/sce_sys/about
+          test -n "$LIBC"
+          test -n "$FIOS"
+          mkdir -p data/sce_sys/about data/sce_module
           cp -v "$SPRX" data/sce_sys/about/right.sprx
+          cp -v "$LIBC" data/sce_module/libc.prx
+          cp -v "$FIOS" data/sce_module/libSceFios2.prx
           echo "== conteúdo de data/ =="
           find data -type f -exec ls -l {} \;
 
@@ -68,6 +77,11 @@ jobs:
           cd cmake-build
           openorbis-cmake -G "Unix Makefiles" ../
           make purpleflix_pkg VERBOSE=1
+
+      - name: Mostrar o que entrou no pacote (arquivos .gp4)
+        if: always()
+        run: |
+          find cmake-build -name '*.gp4' -print -exec cat {} \;
 
       - name: Coletar PKG
         run: |
@@ -87,6 +101,5 @@ jobs:
         if: failure()
         run: |
           echo "== toolchain =="; ls /opt/pacbrew/ps4/openorbis 2>&1 | head -50
-          echo "== right.sprx =="; find /opt/pacbrew oo-toolchain -iname '*right*' 2>/dev/null | head
+          echo "== módulos .prx/.sprx =="; find /opt/pacbrew oo-toolchain \( -iname '*.prx' -o -iname '*.sprx' \) 2>/dev/null | head -30
           echo "== add_pkg =="; grep -rn "add_pkg" /opt/pacbrew/ps4/openorbis 2>/dev/null | head -20
-          echo "== sdl2 =="; find /opt/pacbrew -iname 'sdl2.pc' -o -iname 'SDL.h' 2>/dev/null | head
