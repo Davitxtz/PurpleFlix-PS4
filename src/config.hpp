@@ -1,27 +1,29 @@
-
 #pragma once
 
+// Edite aqui os textos e links do aplicativo.
 namespace cfg {
 
+constexpr const char* kAppName     = "PurpleFlix";
+constexpr const char* kAppByline   = "by Davitxtz";
 constexpr const char* kAppFullName = "PurpleFlix by Davitxtz";
-constexpr const char* kAppByline = "by Davitxtz";
-constexpr const char* kDevName = "Davitxtz";
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion     = "0.1.0";   // versão exibida no app
+constexpr const char* kDevName     = "Davitxtz";
 
-constexpr const char* kInstagramUrl = "https://instagram.com/SEU_USUARIO";
-constexpr const char* kTiktokUrl = "https://tiktok.com/@SEU_USUARIO";
-constexpr const char* kGithubUrl = "https://github.com/Davitxtz";
+// Apresentação do desenvolvedor (uma linha por item, editável).
+constexpr const char* kBioLines[] = {
+    "Desenvolvedor de homebrew para PS4.",
+    "PurpleFlix é um projeto independente de catálogo",
+    "e reprodução de vídeos de fontes autorizadas.",
+    "Edite este texto em src/config.hpp.",
+};
+constexpr int kBioLineCount = 4;
 
-constexpr const char* kLogDir = "/data/purpleflix";
+// LINKS. Os que contêm "SEU_" são PLACEHOLDERS até você informar os reais.
+constexpr const char* kInstagramUrl = "https://instagram.com/SEU_INSTAGRAM_AQUI";
+constexpr const char* kTiktokUrl    = "https://tiktok.com/@SEU_TIKTOK_AQUI";
+constexpr const char* kGithubUrl    = "https://github.com/Davitxtz";
+
+constexpr const char* kLogDir  = "/data/purpleflix";
 constexpr const char* kLogPath = "/data/purpleflix/log.txt";
 
-constexpr const char* kBioLines[] = {
-    "Desenvolvedor independente.",
-    "Criando projetos e explorando tecnologia.",
-    "PurpleFlix: entretenimento em uma interface roxa."
-};
-
-constexpr int kBioLineCount =
-    sizeof(kBioLines) / sizeof(kBioLines[0]);
-
-}
+}  // namespace cfg
