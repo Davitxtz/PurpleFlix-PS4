@@ -30,23 +30,14 @@ const Color C_DIM    = {150, 132, 182, 255};
 const Color C_WARN   = {255, 130, 150, 255};
 const Color C_PANEL  = {22, 10, 42, 255};
 
-// ---------- marcadores e log (SEM funções de formatação) ----------
-FILE* g_log = nullptr;
-
+// ---------- marcadores (apenas criam arquivo vazio) ----------
 void touch(const char* path) {
     FILE* f = fopen(path, "w");
     if (f) fclose(f);
 }
 
-// "tag" precisa ser literal: o caminho é montado em tempo de compilação.
+// "tag" precisa ser literal.
 #define MARK(tag) touch("/data/purpleflix/m_" tag)
-
-void logMsg(const char* s) {
-    if (!g_log) return;
-    fputs(s, g_log);
-    fputc('\n', g_log);
-    fflush(g_log);
-}
 
 // Junta até 3 textos em dst (sem printf).
 void cat(char* dst, size_t n, const char* a, const char* b = "", const char* c = "") {
@@ -311,42 +302,39 @@ void drawMain(const App& a, uint32_t now) {
 int main(int, char**) {
     mkdir(cfg::kLogDir, 0777);
     MARK("00_main_iniciou");
-    g_log = fopen(cfg::kLogPath, "w");
-    logMsg("PurpleFlix iniciando");
+
+    MARK("01_antes_set_main_ready");
     SDL_SetMainReady();
-    MARK("01_set_main_ready");
+    MARK("02_set_main_ready_ok");
 
     App app;
-    MARK("02_antes_pad_init");
+    MARK("03_antes_pad_init");
     app.padOk = pad::init();
-    if (app.padOk) MARK("03_pad_ok"); else MARK("03_pad_falhou");
+    if (app.padOk) MARK("04_pad_ok"); else MARK("04_pad_falhou");
 
-    MARK("04_antes_sdl_init");
+    MARK("05_antes_sdl_init");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         MARK("ERRO_sdl_init");
-        logMsg(SDL_GetError());
         return 1;
     }
-    MARK("05_sdl_init_ok");
+    MARK("06_sdl_init_ok");
 
-    MARK("06_antes_janela");
+    MARK("07_antes_janela");
     SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
                                        SDL_WINDOWPOS_UNDEFINED, W, H, SDL_WINDOW_SHOWN);
     if (!win) {
         MARK("ERRO_janela");
-        logMsg(SDL_GetError());
         return 1;
     }
-    MARK("07_janela_ok");
+    MARK("08_janela_ok");
 
-    MARK("08_antes_renderer");
+    MARK("09_antes_renderer");
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) {
         MARK("ERRO_renderer");
-        logMsg(SDL_GetError());
         return 1;
     }
-    MARK("09_renderer_ok");
+    MARK("10_renderer_ok");
     gfx::init(ren);
 
     Input in;
@@ -378,21 +366,33 @@ int main(int, char**) {
         }
         if (!splash) {
             if (!menuMarked) {
-                MARK("11_menu_principal");
+                MARK("20_menu_principal");
                 menuMarked = true;
             }
             handleInput(app, in.trig, now);
             drawMain(app, now);
         }
         SDL_RenderPresent(ren);
+
         if (firstFrame) {
-            MARK("10_primeiro_quadro");
-            // Teste isolado de snprintf (hipótese): só depois do 1º quadro.
+            firstFrame = false;
+            MARK("11_primeiro_quadro");
+
+            // Testes isolados de formatação e de escrita em arquivo.
             MARK("12_antes_snprintf");
             char tmp[16];
             snprintf(tmp, sizeof tmp, "%d", 42);
             MARK("13_snprintf_ok");
-            firstFrame = false;
+
+            MARK("14_antes_fopen_log");
+            FILE* lf = fopen(cfg::kLogPath, "w");
+            MARK("15_antes_fputs");
+            if (lf) fputs("teste", lf);
+            MARK("16_antes_fflush");
+            if (lf) fflush(lf);
+            MARK("17_antes_fclose");
+            if (lf) fclose(lf);
+            MARK("18_escrita_em_arquivo_ok");
         }
         SDL_Delay(16);
     }
