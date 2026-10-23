@@ -5,10 +5,12 @@
 #include <SDL.h>
 #endif
 
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "config.hpp"
 #include "gfx.hpp"
@@ -31,8 +33,16 @@ const Color C_DIM    = {150, 132, 182, 255};
 const Color C_WARN   = {255, 130, 150, 255};
 const Color C_PANEL  = {22, 10, 42, 255};
 
-// ---------- log ----------
+// ---------- log e marcadores de etapa ----------
 FILE* g_log = nullptr;
+
+// Cria um arquivo vazio "m_<tag>" em /data/purpleflix (não depende de escrita).
+void mark(const char* tag) {
+    char path[128];
+    snprintf(path, sizeof path, "%s/m_%s", cfg::kLogDir, tag);
+    FILE* f = fopen(path, "w");
+    if (f) fclose(f);
+}
 
 void logInit() {
     mkdir(cfg::kLogDir, 0777);
@@ -40,13 +50,24 @@ void logInit() {
 }
 
 void logLine(const char* fmt, ...) {
-    if (!g_log) return;
+    char buf[256];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(g_log, fmt, ap);
+    vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    fputc('\n', g_log);
-    fflush(g_log);
+
+    if (g_log) {  // caminho 1: stdio
+        fprintf(g_log, "%s\n", buf);
+        fflush(g_log);
+    }
+    char path[128];  // caminho 2: POSIX
+    snprintf(path, sizeof path, "%s/log_posix.txt", cfg::kLogDir);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        write(fd, buf, strlen(buf));
+        write(fd, "\n", 1);
+        close(fd);
+    }
 }
 
 // ---------- estado ----------
@@ -226,7 +247,6 @@ void drawInfo(const App& a) {
     textShadow(100, 165, "Informações", 6, C_TEXT);
     rect(100, 222, 160, 6, C_PURPLE);
 
-    // painel esquerdo: desenvolvedor e links
     rect(100, 250, 860, 630, C_PANEL);
     frame(100, 250, 860, 630, 2, C_DEEP);
     text(140, 275, "Desenvolvedor", 3, C_PURPLE);
@@ -248,7 +268,6 @@ void drawInfo(const App& a) {
         text(420, ry + 21, kLinks[i].url, 2, isPlaceholder(kLinks[i].url) ? C_WARN : C_DIM);
     }
 
-    // painel direito: créditos, versão, terceiros
     rect(1000, 250, 820, 630, C_PANEL);
     frame(1000, 250, 820, 630, 2, C_DEEP);
     text(1040, 275, "Créditos", 3, C_PURPLE);
@@ -272,7 +291,7 @@ void drawFooter(const App& a, uint32_t now) {
         text(130, 917, a.toast1, 3, C_TEXT);
         text(130, 953, a.toast2, 3, C_DIM);
     } else if (!a.padOk) {
-        text(100, 930, "Controle não detectado. Veja /data/purpleflix/log.txt", 3, C_WARN);
+        text(100, 930, "Controle não detectado. Veja /data/purpleflix/", 3, C_WARN);
     }
     rect(0, 1010, W, 70, C_NAV);
     text(60, 1034, "D-pad: navegar    X: selecionar    O: voltar    L1/R1: trocar aba", 2, C_DIM);
@@ -299,28 +318,42 @@ void drawMain(const App& a, uint32_t now) {
 
 int main(int, char**) {
     logInit();
+    mark("01_main_iniciou");
     logLine("PurpleFlix %s iniciando", cfg::kVersion);
     SDL_SetMainReady();
 
     App app;
+    mark("02_antes_pad_init");
     app.padOk = pad::init();
+    mark(app.padOk ? "03_pad_ok" : "03_pad_falhou");
     logLine("pad: %s", app.padOk ? "ok" : "falhou");
 
+    mark("04_antes_sdl_init");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        mark("ERRO_sdl_init");
         logLine("SDL_Init falhou: %s", SDL_GetError());
         return 1;
     }
+    mark("05_sdl_init_ok");
+
+    mark("06_antes_janela");
     SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
                                        SDL_WINDOWPOS_UNDEFINED, W, H, SDL_WINDOW_SHOWN);
     if (!win) {
+        mark("ERRO_janela");
         logLine("SDL_CreateWindow falhou: %s", SDL_GetError());
         return 1;
     }
+    mark("07_janela_ok");
+
+    mark("08_antes_renderer");
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) {
+        mark("ERRO_renderer");
         logLine("SDL_CreateRenderer falhou: %s", SDL_GetError());
         return 1;
     }
+    mark("09_renderer_ok");
     gfx::init(ren);
     logLine("SDL ok, entrando no loop");
 
@@ -328,6 +361,8 @@ int main(int, char**) {
     const uint32_t start = SDL_GetTicks();
     bool splash = true;
     bool running = true;
+    bool firstFrame = true;
+    bool menuMarked = false;
 
     while (running) {
         SDL_Event e;
@@ -350,10 +385,18 @@ int main(int, char**) {
             }
         }
         if (!splash) {
+            if (!menuMarked) {
+                mark("11_menu_principal");
+                menuMarked = true;
+            }
             handleInput(app, in.trig, now);
             drawMain(app, now);
         }
         SDL_RenderPresent(ren);
+        if (firstFrame) {
+            mark("10_primeiro_quadro");
+            firstFrame = false;
+        }
         SDL_Delay(16);
     }
 
