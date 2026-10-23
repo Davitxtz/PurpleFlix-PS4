@@ -1,12 +1,8 @@
-
 #pragma once
-
 #include <stdint.h>
 
-namespace font5x7 {
-
-// Cada caractere ocupa 5 colunas e 7 linhas.
-// Um bit ligado representa um pixel aceso.
-const uint8_t* glyph(char c);
-
+namespace font {
+// Retorna 7 linhas de 5 bits (bit 4 = coluna da esquerda).
+// Caractere desconhecido => retângulo.
+const uint8_t* find(char c);
 }
