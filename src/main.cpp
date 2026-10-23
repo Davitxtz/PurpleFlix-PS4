@@ -5,12 +5,9 @@
 #include <SDL.h>
 #endif
 
-#include <fcntl.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include "config.hpp"
 #include "gfx.hpp"
@@ -33,41 +30,36 @@ const Color C_DIM    = {150, 132, 182, 255};
 const Color C_WARN   = {255, 130, 150, 255};
 const Color C_PANEL  = {22, 10, 42, 255};
 
-// ---------- log e marcadores de etapa ----------
+// ---------- marcadores e log (SEM funções de formatação) ----------
 FILE* g_log = nullptr;
 
-// Cria um arquivo vazio "m_<tag>" em /data/purpleflix (não depende de escrita).
-void mark(const char* tag) {
-    char path[128];
-    snprintf(path, sizeof path, "%s/m_%s", cfg::kLogDir, tag);
+void touch(const char* path) {
     FILE* f = fopen(path, "w");
     if (f) fclose(f);
 }
 
-void logInit() {
-    mkdir(cfg::kLogDir, 0777);
-    g_log = fopen(cfg::kLogPath, "w");
+// "tag" precisa ser literal: o caminho é montado em tempo de compilação.
+#define MARK(tag) touch("/data/purpleflix/m_" tag)
+
+void logMsg(const char* s) {
+    if (!g_log) return;
+    fputs(s, g_log);
+    fputc('\n', g_log);
+    fflush(g_log);
 }
 
-void logLine(const char* fmt, ...) {
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
-    va_end(ap);
-
-    if (g_log) {  // caminho 1: stdio
-        fprintf(g_log, "%s\n", buf);
-        fflush(g_log);
+// Junta até 3 textos em dst (sem printf).
+void cat(char* dst, size_t n, const char* a, const char* b = "", const char* c = "") {
+    if (n == 0) return;
+    size_t len = 0;
+    const char* parts[3] = {a, b, c};
+    for (int i = 0; i < 3; ++i) {
+        size_t pl = strlen(parts[i]);
+        if (len + pl >= n) pl = n - 1 - len;
+        memcpy(dst + len, parts[i], pl);
+        len += pl;
     }
-    char path[128];  // caminho 2: POSIX
-    snprintf(path, sizeof path, "%s/log_posix.txt", cfg::kLogDir);
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd >= 0) {
-        write(fd, buf, strlen(buf));
-        write(fd, "\n", 1);
-        close(fd);
-    }
+    dst[len] = 0;
 }
 
 // ---------- estado ----------
@@ -133,11 +125,11 @@ void activate(App& a, uint32_t now) {
     if (a.tab != TAB_INFO) return;
     const Link& l = kLinks[a.sel];
     if (isPlaceholder(l.url)) {
-        snprintf(a.toast1, sizeof a.toast1, "Link ainda não configurado (placeholder).");
-        snprintf(a.toast2, sizeof a.toast2, "Edite %s em src/config.hpp", l.label);
+        cat(a.toast1, sizeof a.toast1, "Link ainda não configurado (placeholder).");
+        cat(a.toast2, sizeof a.toast2, "Edite ", l.label, " em src/config.hpp");
     } else {
-        snprintf(a.toast1, sizeof a.toast1, "Abertura externa indisponível nesta versão.");
-        snprintf(a.toast2, sizeof a.toast2, "%s", l.url);
+        cat(a.toast1, sizeof a.toast1, "Abertura externa indisponível nesta versão.");
+        cat(a.toast2, sizeof a.toast2, l.url);
     }
     a.toastUntil = now + 6000;
 }
@@ -296,7 +288,7 @@ void drawFooter(const App& a, uint32_t now) {
     rect(0, 1010, W, 70, C_NAV);
     text(60, 1034, "D-pad: navegar    X: selecionar    O: voltar    L1/R1: trocar aba", 2, C_DIM);
     char v[48];
-    snprintf(v, sizeof v, "v%s", cfg::kVersion);
+    cat(v, sizeof v, "v", cfg::kVersion);
     text(W - 60 - textWidth(v, 2), 1034, v, 2, C_DIM);
 }
 
@@ -317,45 +309,45 @@ void drawMain(const App& a, uint32_t now) {
 }  // namespace
 
 int main(int, char**) {
-    logInit();
-    mark("01_main_iniciou");
-    logLine("PurpleFlix %s iniciando", cfg::kVersion);
+    mkdir(cfg::kLogDir, 0777);
+    MARK("00_main_iniciou");
+    g_log = fopen(cfg::kLogPath, "w");
+    logMsg("PurpleFlix iniciando");
     SDL_SetMainReady();
+    MARK("01_set_main_ready");
 
     App app;
-    mark("02_antes_pad_init");
+    MARK("02_antes_pad_init");
     app.padOk = pad::init();
-    mark(app.padOk ? "03_pad_ok" : "03_pad_falhou");
-    logLine("pad: %s", app.padOk ? "ok" : "falhou");
+    if (app.padOk) MARK("03_pad_ok"); else MARK("03_pad_falhou");
 
-    mark("04_antes_sdl_init");
+    MARK("04_antes_sdl_init");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        mark("ERRO_sdl_init");
-        logLine("SDL_Init falhou: %s", SDL_GetError());
+        MARK("ERRO_sdl_init");
+        logMsg(SDL_GetError());
         return 1;
     }
-    mark("05_sdl_init_ok");
+    MARK("05_sdl_init_ok");
 
-    mark("06_antes_janela");
+    MARK("06_antes_janela");
     SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
                                        SDL_WINDOWPOS_UNDEFINED, W, H, SDL_WINDOW_SHOWN);
     if (!win) {
-        mark("ERRO_janela");
-        logLine("SDL_CreateWindow falhou: %s", SDL_GetError());
+        MARK("ERRO_janela");
+        logMsg(SDL_GetError());
         return 1;
     }
-    mark("07_janela_ok");
+    MARK("07_janela_ok");
 
-    mark("08_antes_renderer");
+    MARK("08_antes_renderer");
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) {
-        mark("ERRO_renderer");
-        logLine("SDL_CreateRenderer falhou: %s", SDL_GetError());
+        MARK("ERRO_renderer");
+        logMsg(SDL_GetError());
         return 1;
     }
-    mark("09_renderer_ok");
+    MARK("09_renderer_ok");
     gfx::init(ren);
-    logLine("SDL ok, entrando no loop");
 
     Input in;
     const uint32_t start = SDL_GetTicks();
@@ -386,7 +378,7 @@ int main(int, char**) {
         }
         if (!splash) {
             if (!menuMarked) {
-                mark("11_menu_principal");
+                MARK("11_menu_principal");
                 menuMarked = true;
             }
             handleInput(app, in.trig, now);
@@ -394,7 +386,12 @@ int main(int, char**) {
         }
         SDL_RenderPresent(ren);
         if (firstFrame) {
-            mark("10_primeiro_quadro");
+            MARK("10_primeiro_quadro");
+            // Teste isolado de snprintf (hipótese): só depois do 1º quadro.
+            MARK("12_antes_snprintf");
+            char tmp[16];
+            snprintf(tmp, sizeof tmp, "%d", 42);
+            MARK("13_snprintf_ok");
             firstFrame = false;
         }
         SDL_Delay(16);
