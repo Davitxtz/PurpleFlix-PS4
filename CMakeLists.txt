@@ -29,4 +29,4 @@ target_link_libraries(purpleflix ScePad SceUserService)
 
 # Funções do toolchain PacBrew/OpenOrbis (ver ps4-openorbis-sample).
 add_self(purpleflix)
-add_pkg(purpleflix ${CMAKE_SOURCE_DIR}/data "PFLX00001" "PurpleFlix by Davitxtz" "01.01")
+add_pkg(purpleflix ${CMAKE_SOURCE_DIR}/data "PFLX00001" "PurpleFlix by Davitxtz" "01.02")
