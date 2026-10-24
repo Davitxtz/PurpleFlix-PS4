@@ -12,6 +12,7 @@
 #include "config.hpp"
 #include "gfx.hpp"
 #include "pad.hpp"
+#include "netdiag.hpp"
 
 using namespace gfx;
 
