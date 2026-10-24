@@ -670,7 +670,7 @@ int main(int, char**) {
             handleInput(app, in.trig, now);
             drawMain(app, now);
         }
-        SDL_RenderPresent(ref);
+        SDL_RenderPresent(ren);
         SDL_Delay(16);
     }
 
