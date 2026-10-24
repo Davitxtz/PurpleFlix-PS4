@@ -1,4 +1,4 @@
-name: Build PurpleFlix PKG (container oficial OpenOrbis)
+name: Build PurpleFlix PKG (release oficial OpenOrbis v0.5.4)
 
 on:
   push:
@@ -12,49 +12,76 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Instalar clang, lld e make
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld make python3 unzip
+
+      - name: Baixar toolchain oficial (release v0.5.4)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p tc-dl tc
+          gh release download v0.5.4 --repo OpenOrbis/OpenOrbis-PS4-Toolchain --dir tc-dl
+          ls -la tc-dl
+          for f in tc-dl/*; do
+            case "$f" in
+              *.tar.gz|*.tgz) tar xzf "$f" -C tc ;;
+              *.zip) unzip -q "$f" -d tc ;;
+            esac
+          done
+          LINKX=$(find tc -name link.x | head -1)
+          echo "link.x em: ${LINKX:-NENHUM}"
+          test -n "$LINKX"
+          echo "OO_PS4_TOOLCHAIN=$(cd "$(dirname "$LINKX")" && pwd)" >> "$GITHUB_ENV"
+
       - name: Gerar ícone provisório
         run: |
           mkdir -p sce_sys
           python3 tools/make_icon.py sce_sys/icon0.png
 
-      - name: Compilar no container oficial do OpenOrbis
+      - name: Compilar e empacotar
+        env:
+          DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
         run: |
-          docker run --rm --user root -w /workspace -v "$PWD":/workspace \
-            openorbisofficial/toolchain:latest bash -c '
-              set -e
-              echo "OO_PS4_TOOLCHAIN=$OO_PS4_TOOLCHAIN"
-              echo "== conteudo de bin =="
-              ls -la "$OO_PS4_TOOLCHAIN/bin" 2>&1 | head -40
-              ls -la "$OO_PS4_TOOLCHAIN/bin/linux" 2>&1 | head -40
+          set -e
+          TC="$OO_PS4_TOOLCHAIN"
+          echo "TOOLCHAIN=$TC"
+          ls "$TC"
+          echo "== bin/linux =="; ls -la "$TC/bin/linux" 2>&1 | head -40
+          echo "== candidatos create-gp4 =="; find "$TC" -iname 'create-gp4*' 2>/dev/null | head
+          echo "== SDL =="; find "$TC" \( -iname 'libSDL2.a' -o -iname 'SDL.h' \) 2>/dev/null | head
+          echo "== modulos =="; find "$TC" \( -iname 'libc.prx' -o -iname 'libSceFios2.prx' -o -iname 'right.sprx' \) 2>/dev/null | head
 
-              find_one() { find / -xdev -iname "$1" 2>/dev/null | head -1; }
-              tool() { command -v "$1" 2>/dev/null || find / -xdev -type f -name "$1" 2>/dev/null | head -1; }
+          find_one() { find "$TC" -type f -iname "$1" 2>/dev/null | head -1; }
 
-              SPRX=$(find_one right.sprx)
-              LIBC=$(find_one libc.prx)
-              FIOS=$(find_one libSceFios2.prx)
-              FSELF=$(tool create-fself)
-              GP4=$(tool create-gp4)
-              PKGTOOL=$(tool PkgTool.Core)
-              echo "right.sprx:      ${SPRX:-NENHUM}"
-              echo "libc.prx:        ${LIBC:-NENHUM}"
-              echo "libSceFios2.prx: ${FIOS:-NENHUM}"
-              echo "create-fself:    ${FSELF:-NENHUM}"
-              echo "create-gp4:      ${GP4:-NENHUM}"
-              echo "PkgTool.Core:    ${PKGTOOL:-NENHUM}"
-              test -n "$SPRX"
-              test -n "$LIBC"
-              test -n "$FIOS"
-              test -n "$FSELF"
-              test -n "$GP4"
-              test -n "$PKGTOOL"
+          SPRX=$(find_one right.sprx)
+          LIBC=$(find_one libc.prx)
+          FIOS=$(find_one libSceFios2.prx)
+          FSELF=$(find "$TC" -type f -name 'create-fself' 2>/dev/null | head -1)
+          GP4=$(find "$TC" -type f -iname 'create-gp4*' ! -iname '*.exe' ! -iname '*macos*' ! -iname '*.md' 2>/dev/null | head -1)
+          PKGTOOL=$(find "$TC" -type f -path '*linux*' -name 'PkgTool.Core' 2>/dev/null | head -1)
 
-              mkdir -p sce_sys/about sce_module
-              cp "$SPRX" sce_sys/about/right.sprx
-              cp "$LIBC" sce_module/libc.prx
-              cp "$FIOS" sce_module/libSceFios2.prx
-              make FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
-            '
+          echo "right.sprx:      ${SPRX:-NENHUM}"
+          echo "libc.prx:        ${LIBC:-NENHUM}"
+          echo "libSceFios2.prx: ${FIOS:-NENHUM}"
+          echo "create-fself:    ${FSELF:-NENHUM}"
+          echo "create-gp4:      ${GP4:-NENHUM}"
+          echo "PkgTool.Core:    ${PKGTOOL:-NENHUM}"
+          test -n "$SPRX"
+          test -n "$LIBC"
+          test -n "$FIOS"
+          test -n "$FSELF"
+          test -n "$GP4"
+          test -n "$PKGTOOL"
+          chmod +x "$FSELF" "$GP4" "$PKGTOOL"
+
+          mkdir -p sce_sys/about sce_module
+          cp "$SPRX" sce_sys/about/right.sprx
+          cp "$LIBC" sce_module/libc.prx
+          cp "$FIOS" sce_module/libSceFios2.prx
+
+          make FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
 
       - name: Coletar PKG
         run: |
