@@ -610,41 +610,60 @@ void drawMain(const App& a, uint32_t now) {
 
 }  // namespace
 
+static void touchFile(const char* path) {
+    FILE* f = fopen(path, "w");
+    if (f) fclose(f);
+}
+#define MARK(tag) touchFile("/data/purpleflix/m_" tag)
+
 int main(int, char**) {
-    logInit();
-    logMsg("PurpleFlix iniciando");
+    mkdir(cfg::kLogDir, 0777);
+    MARK("00_main_iniciou");
+
+    MARK("01_antes_set_main_ready");
     SDL_SetMainReady();
-    initCatalog();
+    MARK("02_set_main_ready_ok");
 
     App app;
+    MARK("03_antes_pad_init");
     app.padOk = pad::init();
-    logMsg(app.padOk ? "pad: ok" : "pad: falhou");
+    if (app.padOk) MARK("04_pad_ok"); else MARK("04_pad_falhou");
 
+    MARK("05_antes_sdl_init");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        logMsg("SDL_Init falhou");
-        logMsg(SDL_GetError());
+        MARK("ERRO_sdl_init");
         return 1;
     }
-        SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
+    MARK("06_sdl_init_ok");
+
+    MARK("07_antes_janela");
+    SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
                                        SDL_WINDOWPOS_UNDEFINED, W, H, SDL_WINDOW_SHOWN);
     if (!win) {
-        logMsg("SDL_CreateWindow falhou");
-        logMsg(SDL_GetError());
+        MARK("ERRO_janela");
         return 1;
     }
+    MARK("08_janela_ok");
+
+    MARK("09_antes_renderer");
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) {
-        logMsg("SDL_CreateRenderer falhou");
-        logMsg(SDL_GetError());
+        MARK("ERRO_renderer");
         return 1;
     }
+    MARK("10_renderer_ok");
     gfx::init(ren);
-    logMsg("SDL ok, entrando no loop");
+    MARK("11_gfx_init_ok");
+
+    initCatalog();
+    MARK("12_catalogo_ok");
 
     Input in;
     const uint32_t start = SDL_GetTicks();
     bool splash = true;
     bool running = true;
+    bool firstFrame = true;
+    bool menuMarked = false;
 
     while (running) {
         SDL_Event e;
@@ -667,10 +686,24 @@ int main(int, char**) {
             }
         }
         if (!splash) {
+            if (!menuMarked) MARK("14_antes_desenhar_menu");
             handleInput(app, in.trig, now);
             drawMain(app, now);
+            if (!menuMarked) {
+                MARK("15_menu_desenhado");
+                menuMarked = true;
+            }
         }
         SDL_RenderPresent(ren);
+
+        if (firstFrame) {
+            firstFrame = false;
+            MARK("13_primeiro_quadro");
+            logInit();
+            logMsg("PurpleFlix iniciando");
+            logMsg(app.padOk ? "pad: ok" : "pad: falhou");
+            MARK("16_log_escrito");
+        }
         SDL_Delay(16);
     }
 
