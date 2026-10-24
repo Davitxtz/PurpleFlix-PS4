@@ -94,3 +94,19 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
+      - name: Exportar referências de rede (headers e sample net_http)
+        run: |
+          TC="$OO_PS4_TOOLCHAIN"
+          mkdir -p refs
+          cp -r "$TC/samples/net_http" refs/ || echo "sample net_http nao encontrado"
+          for h in Http.h Net.h NetCtl.h Ssl.h Sysmodule.h SystemService.h; do
+            f=$(find "$TC/include" -iname "$h" | head -1)
+            if [ -n "$f" ]; then cp "$f" refs/; else echo "nao achei $h"; fi
+          done
+          ls -laR refs | head -60
+
+      - name: Enviar referências
+        uses: actions/upload-artifact@v4
+        with:
+          name: referencias-rede
+          path: refs/
