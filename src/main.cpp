@@ -13,6 +13,7 @@
 #include "gfx.hpp"
 #include "pad.hpp"
 #include "netdiag.hpp"
+#include "tmdb.hpp"
 
 using namespace gfx;
 
@@ -47,16 +48,18 @@ void logMsg(const char* s) {
     fflush(g_log);
 }
 
-// ---------- catálogo de EXEMPLO (dados locais, não são reais) ----------
+// ---------- catálogo (exemplo local + dados reais da TMDB quando disponíveis) ----------
 constexpr int kMovieCount = 14;
 constexpr int kSeriesCount = 14;
 constexpr int kTitleCount = kMovieCount + kSeriesCount;
 
 struct Title {
-    char name[40];
+    char name[64];
     const char* kind;
     const char* genre;
     char year[8];
+    char overview[256];
+    bool real;  // true = veio da TMDB
 };
 Title g_titles[kTitleCount];
 
@@ -64,6 +67,12 @@ const char* const kGenres[7] = {"Ação", "Drama", "Comédia", "Ficção", "Terr
 const char* const kSynopsis =
     "Sinopse de exemplo. O catálogo real, com capas e sinopses da internet, "
     "será carregado em uma próxima etapa.";
+
+int g_catalogState = 0;  // 0 = carregando, 1 = online, 2 = exemplo (falhou)
+char g_catalogMsg[120] = {0};
+bool g_catalogTried = false;
+tmdb::ListResult g_listMovies;
+tmdb::ListResult g_listSeries;
 
 void initCatalog() {
     for (int i = 0; i < kTitleCount; ++i) {
@@ -74,6 +83,39 @@ void initCatalog() {
         snprintf(t.name, sizeof t.name, "%s de exemplo %02d", t.kind, n);
         t.genre = kGenres[i % 7];
         snprintf(t.year, sizeof t.year, "%d", 2012 + (i * 3) % 13);
+        t.overview[0] = 0;
+        t.real = false;
+    }
+}
+
+void fillFromTmdb(const tmdb::ListResult& r, int base, int count, const char* kind) {
+    for (int i = 0; i < count && i < r.count; ++i) {
+        const tmdb::Item& it = r.items[i];
+        Title& t = g_titles[base + i];
+        snprintf(t.name, sizeof t.name, "%s", it.title[0] ? it.title : "(sem título)");
+        t.kind = kind;
+        t.genre = "Popular";
+        snprintf(t.year, sizeof t.year, "%s", it.year[0] ? it.year : "----");
+        snprintf(t.overview, sizeof t.overview, "%s",
+                 it.overview[0] ? it.overview : "Sem sinopse disponível.");
+        t.real = true;
+    }
+}
+
+void loadOnlineCatalog() {
+    bool okM = tmdb::fetchPopular("movie", "pt-BR", 1, g_listMovies);
+    if (okM) fillFromTmdb(g_listMovies, 0, kMovieCount, "Filme");
+    bool okS = tmdb::fetchPopular("tv", "pt-BR", 1, g_listSeries);
+    if (okS) fillFromTmdb(g_listSeries, kMovieCount, kSeriesCount, "Série");
+
+    if (okM || okS) {
+        g_catalogState = 1;
+        snprintf(g_catalogMsg, sizeof g_catalogMsg, "%s",
+                 (okM && okS) ? "Filmes e séries populares." : "Parte do catálogo não carregou.");
+    } else {
+        g_catalogState = 2;
+        snprintf(g_catalogMsg, sizeof g_catalogMsg, "%s",
+                 g_listMovies.message[0] ? g_listMovies.message : "Sem rede ou sem chave.");
     }
 }
 
@@ -85,6 +127,30 @@ Color posterTop(int id) {
 Color posterBottom(int id) {
     Color c = posterTop(id);
     return Color{(uint8_t)(c.r / 4), (uint8_t)(c.g / 4), (uint8_t)(c.b / 4), 255};
+}
+
+// Maior escala (entre minSc e sc) em que o texto cabe em maxW.
+int fitScale(const char* s, int maxW, int sc, int minSc) {
+    while (sc > minSc && textWidth(s, sc) > maxW) --sc;
+    return sc;
+}
+
+// true se cada palavra do texto cabe sozinha em maxW.
+bool wordsFit(const char* s, int scale, int maxW) {
+    char w[64];
+    const char* p = s;
+    while (*p) {
+        while (*p == ' ') ++p;
+        const char* q = p;
+        while (*q && *q != ' ') ++q;
+        int n = (int)(q - p);
+        if (n > 63) n = 63;
+        memcpy(w, p, n);
+        w[n] = 0;
+        if (textWidth(w, scale) > maxW) return false;
+        p = q;
+    }
+    return true;
 }
 
 // Escreve texto com quebra de linha por palavras. Retorna o número de linhas.
@@ -434,12 +500,14 @@ void drawNav(const App& a) {
 }
 
 void drawPoster(int x, int y, int w, int h, int id, bool focused, int ts) {
+    const Title& t = g_titles[id];
     vgradient(x, y, w, h, posterTop(id), posterBottom(id));
     if (focused) frame(x - 8, y - 8, w + 16, h + 16, 6, C_BRIGHT);
     else frame(x, y, w, h, 2, C_DEEP);
-    text(x + 12, y + 12, "EXEMPLO", 2, Color{255, 255, 255, 150});
-    drawWrapped(x + 12, y + h / 2, w - 24, g_titles[id].name, ts, C_TEXT, 3);
-    text(x + 12, y + h - 26, g_titles[id].year, 2, C_TEXT);
+    if (!t.real) text(x + 12, y + 12, "EXEMPLO", 2, Color{255, 255, 255, 150});
+    int s = wordsFit(t.name, ts, w - 24) ? ts : (ts > 1 ? ts - 1 : ts);
+    drawWrapped(x + 12, y + h / 2, w - 24, t.name, s, C_TEXT, 3);
+    text(x + 12, y + h - 26, t.year, 2, C_TEXT);
 }
 
 void drawHome(const App& a) {
@@ -448,13 +516,16 @@ void drawHome(const App& a) {
     vgradient(100, 160, 1720, 280, posterTop(hid), C_BOT);
     frame(100, 160, 1720, 280, 3, C_DEEP);
     text(150, 190, "Destaques", 3, C_BRIGHT);
-    textShadow(150, 235, t.name, 8, C_TEXT);
+    textShadow(150, 235, t.name, fitScale(t.name, 1500, 8, 3), C_TEXT);
     char meta[96];
     snprintf(meta, sizeof meta, "%s - %s - %s", t.kind, t.genre, t.year);
     text(150, 320, meta, 3, C_BRIGHT);
-    drawWrapped(150, 365, 1500, kSynopsis, 3, C_TEXT, 2);
+    const char* src = t.overview[0] ? t.overview : kSynopsis;
+    char syn[200];
+    snprintf(syn, sizeof syn, "%.160s%s", src, strlen(src) > 160 ? "..." : "");
+    drawWrapped(150, 365, 1500, syn, 3, C_TEXT, 2);
 
-    text(100, 480, "Recomendados (exemplos)", 3, C_PURPLE);
+    text(100, 480, "Recomendados", 3, C_PURPLE);
     for (int i = 0; i < 7; ++i) {
         drawPoster(100 + i * 250, 520, 220, 330, homeId(i), a.inContent && a.row == 0 && a.col == i, 3);
     }
@@ -491,7 +562,7 @@ void drawSearch(const App& a) {
     }
 
     if (a.qlen == 0) {
-        text(100, 615, "Digite para buscar no catálogo de exemplo.", 3, C_DIM);
+        text(100, 615, "Digite para buscar nos títulos carregados.", 3, C_DIM);
     } else {
         char buf[64];
         snprintf(buf, sizeof buf, "Resultados: %d", a.totalRes);
@@ -534,14 +605,17 @@ void drawInfo(const App& a) {
     text(1040, 275, "Créditos", 3, C_PURPLE);
     text(1040, 315, cfg::kAppFullName, 3, C_TEXT);
     text(1040, 349, "Interface e código: Davitxtz", 3, C_DIM);
-    text(1040, 383, "Catálogo online: em desenvolvimento", 3, C_DIM);
+    text(1040, 383, "Metadados e imagens: TMDB", 3, C_DIM);
     text(1040, 440, "Versão instalada", 3, C_PURPLE);
     textShadow(1040, 478, cfg::kVersion, 6, C_TEXT);
     text(1040, 560, "Bibliotecas e projetos de terceiros", 3, C_PURPLE);
     text(1040, 600, "OpenOrbis PS4 Toolchain (GPL-3.0)", 3, C_DIM);
     text(1040, 634, "musl libc (MIT)", 3, C_DIM);
     text(1040, 668, "SDL2 (zlib)", 3, C_DIM);
-    text(1040, 702, "Licenças completas: ver README", 3, C_DIM);
+    text(1040, 702, "TMDB API (metadados)", 3, C_DIM);
+    text(1040, 736, "Licenças completas: ver README", 3, C_DIM);
+    text(1040, 800, "This product uses the TMDB API but is", 2, C_DIM);
+    text(1040, 820, "not endorsed or certified by TMDB.", 2, C_DIM);
 }
 
 void drawDetail(const App& a) {
@@ -550,11 +624,11 @@ void drawDetail(const App& a) {
     vgradient(0, 0, W, H, posterTop(id), C_BOT);
     rect(0, 0, W, H, Color{0, 0, 0, 150});
     drawPoster(140, 170, 380, 570, id, false, 4);
-    textShadow(600, 190, t.name, 7, C_TEXT);
+    textShadow(600, 190, t.name, fitScale(t.name, 1250, 7, 3), C_TEXT);
     char meta[96];
     snprintf(meta, sizeof meta, "%s - %s - %s", t.kind, t.genre, t.year);
     text(600, 280, meta, 3, C_BRIGHT);
-    drawWrapped(600, 340, 1100, kSynopsis, 3, C_TEXT, 4);
+    drawWrapped(600, 340, 1100, t.overview[0] ? t.overview : kSynopsis, 3, C_TEXT, 5);
 
     const char* labels[2] = {"Assistir", "Voltar"};
     for (int i = 0; i < 2; ++i) {
@@ -574,6 +648,8 @@ void drawFooter(const App& a, uint32_t now) {
         frame(100, 900, 1720, 90, 2, C_PURPLE);
         text(130, 917, a.toast1, 3, C_TEXT);
         text(130, 953, a.toast2, 3, C_DIM);
+    } else if (g_catalogState == 0) {
+        text(100, 930, "Carregando catálogo online...", 3, C_BRIGHT);
     } else if (!a.padOk) {
         text(100, 930, "Controle não detectado. Veja /data/purpleflix/", 3, C_WARN);
     }
@@ -610,6 +686,7 @@ void drawMain(const App& a, uint32_t now) {
 }
 
 }  // namespace
+
 static void touchFile(const char* path) {
     FILE* f = fopen(path, "w");
     if (f) fclose(f);
@@ -704,6 +781,17 @@ int main(int, char**) {
         SDL_RenderPresent(ren);
         netdiag::runPending();
 
+        // Carrega o catálogo online UMA vez, depois do primeiro quadro do menu.
+        if (!splash && menuMarked && !g_catalogTried && !netdiag::active()) {
+            g_catalogTried = true;
+            MARK("17_antes_catalogo_online");
+            loadOnlineCatalog();
+            MARK("18_catalogo_online_fim");
+            uint32_t t2 = SDL_GetTicks();
+            if (g_catalogState == 1) toast(app, "Catálogo online carregado (TMDB).", g_catalogMsg, t2);
+            else toast(app, "Usando catálogo de exemplo.", g_catalogMsg, t2);
+        }
+
         if (firstFrame) {
             firstFrame = false;
             MARK("13_primeiro_quadro");
@@ -720,3 +808,5 @@ int main(int, char**) {
     SDL_Quit();
     return 0;
 }
+
+// FIM DO ARQUIVO (main.cpp)
