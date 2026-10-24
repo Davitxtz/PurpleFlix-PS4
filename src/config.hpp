@@ -6,7 +6,7 @@ namespace cfg {
 constexpr const char* kAppName     = "PurpleFlix";
 constexpr const char* kAppByline   = "by Davitxtz";
 constexpr const char* kAppFullName = "PurpleFlix by Davitxtz";
-constexpr const char* kVersion     = "0.1.0";   // versão exibida no app
+constexpr const char* kVersion     = "0.2.0";   // versão exibida no app
 constexpr const char* kDevName     = "Davitxtz";
 
 // Apresentação do desenvolvedor (uma linha por item, editável).
@@ -18,9 +18,9 @@ constexpr const char* kBioLines[] = {
 };
 constexpr int kBioLineCount = 4;
 
-// LINKS. Os que contêm "SEU_" são PLACEHOLDERS até você informar os reais.
-constexpr const char* kInstagramUrl = "https://instagram.com/SEU_INSTAGRAM_AQUI";
-constexpr const char* kTiktokUrl    = "https://tiktok.com/@SEU_TIKTOK_AQUI";
+// Links. Se algum contiver "SEU_", o app o trata como PLACEHOLDER.
+constexpr const char* kInstagramUrl = "https://instagram.com/davitxtz";
+constexpr const char* kTiktokUrl    = "https://tiktok.com/@odavivov";
 constexpr const char* kGithubUrl    = "https://github.com/Davitxtz";
 
 constexpr const char* kLogDir  = "/data/purpleflix";
