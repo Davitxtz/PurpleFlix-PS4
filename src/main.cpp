@@ -625,5 +625,57 @@ int main(int, char**) {
         logMsg(SDL_GetError());
         return 1;
     }
-    SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
-                                       SDL_WINDOWPOS_UNDEFINED
+        SDL_Window* win = SDL_CreateWindow(cfg::kAppFullName, SDL_WINDOWPOS_UNDEFINED,
+                                       SDL_WINDOWPOS_UNDEFINED, W, H, SDL_WINDOW_SHOWN);
+    if (!win) {
+        logMsg("SDL_CreateWindow falhou");
+        logMsg(SDL_GetError());
+        return 1;
+    }
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    if (!ren) {
+        logMsg("SDL_CreateRenderer falhou");
+        logMsg(SDL_GetError());
+        return 1;
+    }
+    gfx::init(ren);
+    logMsg("SDL ok, entrando no loop");
+
+    Input in;
+    const uint32_t start = SDL_GetTicks();
+    bool splash = true;
+    bool running = true;
+
+    while (running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) running = false;
+        }
+        uint32_t now = SDL_GetTicks();
+        updateInput(in, now);
+
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+        SDL_RenderClear(ren);
+
+        if (splash) {
+            uint32_t t = now - start;
+            if (t >= 3000 || (in.trig & (pad::kCross | pad::kOptions))) {
+                splash = false;
+                in.trig = 0;
+            } else {
+                drawSplash(t);
+            }
+        }
+        if (!splash) {
+            handleInput(app, in.trig, now);
+            drawMain(app, now);
+        }
+        SDL_RenderPresent(ref);
+        SDL_Delay(16);
+    }
+
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    return 0;
+}
