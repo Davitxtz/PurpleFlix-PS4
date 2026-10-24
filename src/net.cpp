@@ -91,7 +91,9 @@ bool net::init(int* err, const char** stage) {
 void net::shutdown() {
     if (!g_ready) return;
     sceHttpTerm(g_httpCtxId);
-    sceSslTerm(g_sslCtxId);
+    // O header declara sceSslTerm() sem parâmetros (prototype genérico do gerador de stubs),
+    // mas o sample oficial chama com o id do contexto. Chamamos via ponteiro com o tipo correto.
+    ((void (*)(int))sceSslTerm)(g_sslCtxId);
     sceNetPoolDestroy(g_netMemId);
     g_ready = false;
 }
