@@ -40,48 +40,48 @@ jobs:
           mkdir -p sce_sys
           python3 tools/make_icon.py sce_sys/icon0.png
 
-      - name: Compilar e empacotar
-        env:
-          DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
+      - name: Compilar e gerar pkg.gp4
         run: |
           set -e
           TC="$OO_PS4_TOOLCHAIN"
           echo "TOOLCHAIN=$TC"
-          ls "$TC"
-          echo "== bin/linux =="; ls -la "$TC/bin/linux" 2>&1 | head -40
-          echo "== candidatos create-gp4 =="; find "$TC" -iname 'create-gp4*' 2>/dev/null | head
-          echo "== SDL =="; find "$TC" \( -iname 'libSDL2.a' -o -iname 'SDL.h' \) 2>/dev/null | head
-          echo "== modulos =="; find "$TC" \( -iname 'libc.prx' -o -iname 'libSceFios2.prx' -o -iname 'right.sprx' \) 2>/dev/null | head
 
           find_one() { find "$TC" -type f -iname "$1" 2>/dev/null | head -1; }
 
           SPRX=$(find_one right.sprx)
           LIBC=$(find_one libc.prx)
           FIOS=$(find_one libSceFios2.prx)
-          FSELF=$(find "$TC" -type f -name 'create-fself' 2>/dev/null | head -1)
+          FSELF="$TC/bin/linux/create-fself"
           GP4="$TC/bin/linux/create-gp4"
-          PKGTOOL=$(find "$TC" -type f -path '*linux*' -name 'PkgTool.Core' 2>/dev/null | head -1)
+          PKGTOOL="$TC/bin/linux/PkgTool.Core"
 
           echo "right.sprx:      ${SPRX:-NENHUM}"
           echo "libc.prx:        ${LIBC:-NENHUM}"
           echo "libSceFios2.prx: ${FIOS:-NENHUM}"
-          echo "create-fself:    ${FSELF:-NENHUM}"
-          echo "create-gp4:      ${GP4:-NENHUM}"
-          echo "PkgTool.Core:    ${PKGTOOL:-NENHUM}"
           test -n "$SPRX"
           test -n "$LIBC"
           test -n "$FIOS"
-          test -n "$FSELF"
-          test -n "$GP4"
-          test -n "$PKGTOOL"
-          chmod +x "$FSELF" "$GP4" "$PKGTOOL"
+          test -x "$FSELF"
+          test -x "$GP4"
+          test -x "$PKGTOOL"
 
           mkdir -p sce_sys/about sce_module
           cp "$SPRX" sce_sys/about/right.sprx
           cp "$LIBC" sce_module/libc.prx
           cp "$FIOS" sce_module/libSceFios2.prx
 
-          make FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
+          make pkg.gp4 FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
+          echo "== pkg.gp4 =="
+          cat pkg.gp4
+
+      - name: Gerar PKG (container com OpenSSL antigo)
+        run: |
+          docker run --rm --user root \
+            -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+            -w /workspace -v "$PWD":/workspace \
+            openorbisofficial/toolchain:latest \
+            bash -c '/workspace/tc/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core pkg_build pkg.gp4 .'
+          ls -l ./*.pkg
 
       - name: Coletar PKG
         run: |
