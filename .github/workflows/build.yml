@@ -23,24 +23,37 @@ jobs:
             openorbisofficial/toolchain:latest bash -c '
               set -e
               echo "OO_PS4_TOOLCHAIN=$OO_PS4_TOOLCHAIN"
-              ls "$OO_PS4_TOOLCHAIN" | head -40
-              echo "== SDL no toolchain =="
-              find "$OO_PS4_TOOLCHAIN" \( -iname "libSDL2*" -o -iname "SDL.h" \) 2>/dev/null | head
+              echo "== conteudo de bin =="
+              ls -la "$OO_PS4_TOOLCHAIN/bin" 2>&1 | head -40
+              ls -la "$OO_PS4_TOOLCHAIN/bin/linux" 2>&1 | head -40
+
               find_one() { find / -xdev -iname "$1" 2>/dev/null | head -1; }
+              tool() { command -v "$1" 2>/dev/null || find / -xdev -type f -name "$1" 2>/dev/null | head -1; }
+
               SPRX=$(find_one right.sprx)
               LIBC=$(find_one libc.prx)
               FIOS=$(find_one libSceFios2.prx)
+              FSELF=$(tool create-fself)
+              GP4=$(tool create-gp4)
+              PKGTOOL=$(tool PkgTool.Core)
               echo "right.sprx:      ${SPRX:-NENHUM}"
               echo "libc.prx:        ${LIBC:-NENHUM}"
               echo "libSceFios2.prx: ${FIOS:-NENHUM}"
+              echo "create-fself:    ${FSELF:-NENHUM}"
+              echo "create-gp4:      ${GP4:-NENHUM}"
+              echo "PkgTool.Core:    ${PKGTOOL:-NENHUM}"
               test -n "$SPRX"
               test -n "$LIBC"
               test -n "$FIOS"
+              test -n "$FSELF"
+              test -n "$GP4"
+              test -n "$PKGTOOL"
+
               mkdir -p sce_sys/about sce_module
               cp "$SPRX" sce_sys/about/right.sprx
               cp "$LIBC" sce_module/libc.prx
               cp "$FIOS" sce_module/libSceFios2.prx
-              make
+              make FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
             '
 
       - name: Coletar PKG
