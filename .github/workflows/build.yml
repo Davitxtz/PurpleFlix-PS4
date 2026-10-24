@@ -59,7 +59,7 @@ jobs:
           LIBC=$(find_one libc.prx)
           FIOS=$(find_one libSceFios2.prx)
           FSELF=$(find "$TC" -type f -name 'create-fself' 2>/dev/null | head -1)
-          GP4=$(find "$TC" -type f -iname 'create-gp4*' ! -iname '*.exe' ! -iname '*macos*' ! -iname '*.md' 2>/dev/null | head -1)
+          GP4="$TC/bin/linux/create-gp4"
           PKGTOOL=$(find "$TC" -type f -path '*linux*' -name 'PkgTool.Core' 2>/dev/null | head -1)
 
           echo "right.sprx:      ${SPRX:-NENHUM}"
