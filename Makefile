@@ -6,6 +6,11 @@ VERSION    := 01.05
 TITLE_ID   := PFLX00002
 CONTENT_ID := IV0000-PFLX00002_00-PURPLEFLIX000000
 
+# ---- Ferramentas (o workflow passa os caminhos reais) ----
+FSELF   ?= create-fself
+GP4     ?= create-gp4
+PKGTOOL ?= PkgTool.Core
+
 # ---- Toolchain ----
 TOOLCHAIN := $(OO_PS4_TOOLCHAIN)
 
@@ -23,7 +28,6 @@ OUT_OELF := $(INTDIR)/$(PROJ).oelf
 CC  := clang
 CXX := clang++
 LD  := ld.lld
-PKG := $(TOOLCHAIN)/bin/linux
 
 CPPFILES := $(wildcard $(SRCDIR)/*.cpp)
 OBJS     := $(patsubst $(SRCDIR)/%.cpp,$(INTDIR)/%.o,$(CPPFILES))
@@ -52,26 +56,26 @@ $(INTDIR)/%.o: $(SRCDIR)/%.cpp | $(INTDIR)
 
 eboot.bin: $(OBJS) | $(INTDIR)
 > $(LD) $(OBJS) -o $(OUT_ELF) $(LDFLAGS)
-> $(PKG)/create-fself -in=$(OUT_ELF) -out=$(OUT_OELF) --eboot "eboot.bin" --paid 0x3800000000000011
+> $(FSELF) -in=$(OUT_ELF) -out=$(OUT_OELF) --eboot "eboot.bin" --paid 0x3800000000000011
 
 sce_sys/param.sfo: Makefile
-> $(PKG)/PkgTool.Core sfo_new $@
-> $(PKG)/PkgTool.Core sfo_setentry $@ APP_TYPE --type Integer --maxsize 4 --value 1
-> $(PKG)/PkgTool.Core sfo_setentry $@ APP_VER --type Utf8 --maxsize 8 --value '$(VERSION)'
-> $(PKG)/PkgTool.Core sfo_setentry $@ ATTRIBUTE --type Integer --maxsize 4 --value 0
-> $(PKG)/PkgTool.Core sfo_setentry $@ CATEGORY --type Utf8 --maxsize 4 --value 'gd'
-> $(PKG)/PkgTool.Core sfo_setentry $@ CONTENT_ID --type Utf8 --maxsize 48 --value '$(CONTENT_ID)'
-> $(PKG)/PkgTool.Core sfo_setentry $@ DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0
-> $(PKG)/PkgTool.Core sfo_setentry $@ SYSTEM_VER --type Integer --maxsize 4 --value 0
-> $(PKG)/PkgTool.Core sfo_setentry $@ TITLE --type Utf8 --maxsize 128 --value '$(TITLE)'
-> $(PKG)/PkgTool.Core sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
-> $(PKG)/PkgTool.Core sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'
+> $(PKGTOOL) sfo_new $@
+> $(PKGTOOL) sfo_setentry $@ APP_TYPE --type Integer --maxsize 4 --value 1
+> $(PKGTOOL) sfo_setentry $@ APP_VER --type Utf8 --maxsize 8 --value '$(VERSION)'
+> $(PKGTOOL) sfo_setentry $@ ATTRIBUTE --type Integer --maxsize 4 --value 0
+> $(PKGTOOL) sfo_setentry $@ CATEGORY --type Utf8 --maxsize 4 --value 'gd'
+> $(PKGTOOL) sfo_setentry $@ CONTENT_ID --type Utf8 --maxsize 48 --value '$(CONTENT_ID)'
+> $(PKGTOOL) sfo_setentry $@ DOWNLOAD_DATA_SIZE --type Integer --maxsize 4 --value 0
+> $(PKGTOOL) sfo_setentry $@ SYSTEM_VER --type Integer --maxsize 4 --value 0
+> $(PKGTOOL) sfo_setentry $@ TITLE --type Utf8 --maxsize 128 --value '$(TITLE)'
+> $(PKGTOOL) sfo_setentry $@ TITLE_ID --type Utf8 --maxsize 12 --value '$(TITLE_ID)'
+> $(PKGTOOL) sfo_setentry $@ VERSION --type Utf8 --maxsize 8 --value '$(VERSION)'
 
 pkg.gp4: eboot.bin sce_sys/param.sfo sce_sys/icon0.png sce_sys/about/right.sprx $(LIBMODULES)
-> $(PKG)/create-gp4 -out $@ --content-id=$(CONTENT_ID) --files "$^"
+> $(GP4) -out $@ --content-id=$(CONTENT_ID) --files "$^"
 
 $(CONTENT_ID).pkg: pkg.gp4
-> $(PKG)/PkgTool.Core pkg_build $< .
+> $(PKGTOOL) pkg_build $< .
 
 clean:
 > rm -rf $(INTDIR) eboot.bin pkg.gp4 sce_sys/param.sfo *.pkg
