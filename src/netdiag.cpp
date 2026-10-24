@@ -12,6 +12,7 @@
 #include "net.hpp"
 #include "netdiag.hpp"
 #include "pad.hpp"
+#include "tmdb.hpp"
 
 using namespace gfx;
 
@@ -35,11 +36,13 @@ constexpr int kMaxLines = 8;
 
 bool g_active = false;
 bool g_pending = false;
+int g_mode = 0;   // 0 = rede, 1 = TMDB filmes pt-BR, 2 = TMDB séries en-US
 int g_state = 0;  // 0 = parado, 1 = testando, 2 = concluído
 char g_lines[kMaxLines][kLineLen];
 int g_nlines = 0;
 char g_dummy[kLineLen];
 char g_body[1024];
+tmdb::ListResult g_res;
 
 char* nextLine() {
     if (g_nlines < kMaxLines) {
@@ -70,7 +73,7 @@ void saveLog() {
     fclose(f);
 }
 
-void runTest() {
+void runNetTest() {
     g_nlines = 0;
     int ierr = 0;
     const char* istage = "";
@@ -109,6 +112,28 @@ void runTest() {
     saveLog();
 }
 
+void runTmdbTest(const char* kind, const char* lang) {
+    g_nlines = 0;
+    uint32_t t0 = SDL_GetTicks();
+    bool ok = tmdb::fetchPopular(kind, lang, 1, g_res);
+    unsigned ms = (unsigned)(SDL_GetTicks() - t0);
+
+    snprintf(nextLine(), kLineLen, "TMDB %s (%s): %s - HTTP %d, %d itens, %u ms", kind, lang,
+             ok ? "OK" : "FALHOU", g_res.status, g_res.count, ms);
+    if (!ok) {
+        snprintf(nextLine(), kLineLen, "   etapa: %s, código 0x%08X",
+                 g_res.stage ? g_res.stage : "?", (unsigned)g_res.err);
+        if (g_res.message[0]) snprintf(nextLine(), kLineLen, "   %s", g_res.message);
+    } else {
+        for (int i = 0; i < g_res.count && i < 6; ++i) {
+            snprintf(nextLine(), kLineLen, "%d. %s (%s)", i + 1, g_res.items[i].title,
+                     g_res.items[i].year);
+        }
+    }
+    g_state = 2;
+    saveLog();
+}
+
 }  // namespace
 
 bool netdiag::active() { return g_active; }
@@ -117,36 +142,48 @@ void netdiag::open() { g_active = true; }
 
 void netdiag::handle(uint32_t trig) {
     if (trig & pad::kCircle) g_active = false;
-    if ((trig & pad::kCross) && g_state != 1) {
-        g_state = 1;
-        g_pending = true;
+    if (g_state == 1) return;
+    if (trig & pad::kCross) {
+        g_mode = 0;
+    } else if (trig & pad::kSquare) {
+        g_mode = 1;
+    } else if (trig & pad::kTriangle) {
+        g_mode = 2;
+    } else {
+        return;
     }
+    g_state = 1;
+    g_pending = true;
 }
 
 void netdiag::draw() {
     vgradient(0, 0, W, H, C_TOP, C_BOT);
     textShadow(100, 160, "Diagnóstico de rede", 6, C_TEXT);
-    text(100, 240, "Teste de conexão do console. Nenhum dado pessoal é enviado.", 3, C_DIM);
-    text(100, 280, "Alvo (o mesmo do sample oficial do OpenOrbis):", 3, C_DIM);
-    text(100, 314, kUrl, 3, C_BRIGHT);
+    text(100, 240, "Testes de conexão do console. Nenhum dado pessoal é enviado.", 3, C_DIM);
 
     if (g_state == 0) {
-        text(100, 400, "Pressione X para executar o teste.", 4, C_TEXT);
+        text(100, 330, "X: teste de conexão (robots.txt)", 3, C_TEXT);
+        text(100, 380, "Quadrado: TMDB, filmes populares (pt-BR)", 3, C_TEXT);
+        text(100, 430, "Triângulo: TMDB, séries populares (en-US)", 3, C_TEXT);
+        text(100, 510, "A chave da TMDB fica em /data/purpleflix/tmdb_key.txt", 3, C_DIM);
     } else if (g_state == 1) {
-        text(100, 400, "Testando... aguarde.", 4, C_BRIGHT);
+        text(100, 330, "Testando... aguarde.", 4, C_BRIGHT);
     } else {
         for (int i = 0; i < g_nlines; ++i) {
             bool bad = strstr(g_lines[i], "FALHOU") || strstr(g_lines[i], "INSEGURO");
-            text(100, 400 + i * 46, g_lines[i], 3, bad ? C_WARN : C_TEXT);
+            text(100, 330 + i * 46, g_lines[i], 3, bad ? C_WARN : C_TEXT);
         }
     }
 
+    text(100, 970, "This product uses the TMDB API but is not endorsed or certified by TMDB.", 2, C_DIM);
     rect(0, 1010, W, 70, C_NAV);
-    text(60, 1034, "X: executar o teste    O: voltar", 2, C_DIM);
+    text(60, 1034, "X: rede    Quadrado: TMDB filmes    Triângulo: TMDB séries    O: voltar", 2, C_DIM);
 }
 
 void netdiag::runPending() {
     if (!g_pending) return;
     g_pending = false;
-    runTest();
+    if (g_mode == 0) runNetTest();
+    else if (g_mode == 1) runTmdbTest("movie", "pt-BR");
+    else runTmdbTest("tv", "en-US");
 }
