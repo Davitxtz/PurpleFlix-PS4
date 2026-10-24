@@ -1,4 +1,4 @@
-name: Build PurpleFlix PKG
+name: Build PurpleFlix PKG (container oficial OpenOrbis)
 
 on:
   push:
@@ -12,83 +12,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout OpenOrbis (para obter right.sprx e módulos)
-        uses: actions/checkout@v4
-        with:
-          repository: OpenOrbis/OpenOrbis-PS4-Toolchain
-          ref: v0.5.4
-          path: oo-toolchain
-
-      - name: Dependências do host (pacman do PacBrew)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pacman-package-manager makepkg libarchive-tools build-essential \
-            autoconf automake libtool cmake ninja-build nasm git curl ca-certificates \
-            python3 python3-setuptools pkg-config zip unzip xz-utils file
-
-      - name: Configurar repositório PacBrew
-        run: |
-          CONF="$RUNNER_TEMP/pacbrew.conf"
-          if [ -f /etc/pacman.conf ]; then
-            cp /etc/pacman.conf "$CONF"
-          else
-            printf '[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\nLocalFileSigLevel = Optional\n' > "$CONF"
-          fi
-          if ! grep -q '^\[pacbrew\]' "$CONF"; then
-            printf '\n[pacbrew]\nSigLevel = Optional TrustAll\nServer = https://pacman.mydedibox.fr/pacbrew/packages/\n' >> "$CONF"
-          fi
-
-      - name: Instalar OpenOrbis + SDL2 (PacBrew)
-        run: |
-          CONF="$RUNNER_TEMP/pacbrew.conf"
-          sudo pacman --config "$CONF" -Sy --noconfirm
-          sudo pacman --config "$CONF" -S --needed --noconfirm \
-            ps4-openorbis ps4-openorbis-portlibs ps4-openorbis-sdl2
-          test -f /opt/pacbrew/ps4/openorbis/ps4vars.sh
-
       - name: Gerar ícone provisório
-        run: python3 tools/make_icon.py data/sce_sys/icon0.png
-
-      - name: Incluir right.sprx e módulos libc no pacote
         run: |
-          find_one() { find /opt/pacbrew oo-toolchain -iname "$1" 2>/dev/null | head -1; }
-          SPRX=$(find_one right.sprx)
-          LIBC=$(find_one libc.prx)
-          FIOS=$(find_one libSceFios2.prx)
-          echo "right.sprx:      ${SPRX:-NENHUM}"
-          echo "libc.prx:        ${LIBC:-NENHUM}"
-          echo "libSceFios2.prx: ${FIOS:-NENHUM}"
-          test -n "$SPRX"
-          test -n "$LIBC"
-          test -n "$FIOS"
-          mkdir -p data/sce_sys/about data/sce_module
-          cp -v "$SPRX" data/sce_sys/about/right.sprx
-          cp -v "$LIBC" data/sce_module/libc.prx
-          cp -v "$FIOS" data/sce_module/libSceFios2.prx
-          echo "== conteúdo de data/ =="
-          find data -type f -exec ls -l {} \;
+          mkdir -p sce_sys
+          python3 tools/make_icon.py sce_sys/icon0.png
 
-      - name: Compilar e empacotar
-        shell: bash
+      - name: Compilar no container oficial do OpenOrbis
         run: |
-          source /opt/pacbrew/ps4/openorbis/ps4vars.sh
-          mkdir -p cmake-build
-          cd cmake-build
-          openorbis-cmake -G "Unix Makefiles" ../
-          make purpleflix_pkg VERBOSE=1
-
-      - name: Mostrar o que entrou no pacote (arquivos .gp4)
-        if: always()
-        run: |
-          find cmake-build -name '*.gp4' -print -exec cat {} \;
+          docker run --rm --user root -w /workspace -v "$PWD":/workspace \
+            openorbisofficial/toolchain:latest bash -c '
+              set -e
+              echo "OO_PS4_TOOLCHAIN=$OO_PS4_TOOLCHAIN"
+              ls "$OO_PS4_TOOLCHAIN" | head -40
+              echo "== SDL no toolchain =="
+              find "$OO_PS4_TOOLCHAIN" \( -iname "libSDL2*" -o -iname "SDL.h" \) 2>/dev/null | head
+              find_one() { find / -xdev -iname "$1" 2>/dev/null | head -1; }
+              SPRX=$(find_one right.sprx)
+              LIBC=$(find_one libc.prx)
+              FIOS=$(find_one libSceFios2.prx)
+              echo "right.sprx:      ${SPRX:-NENHUM}"
+              echo "libc.prx:        ${LIBC:-NENHUM}"
+              echo "libSceFios2.prx: ${FIOS:-NENHUM}"
+              test -n "$SPRX"
+              test -n "$LIBC"
+              test -n "$FIOS"
+              mkdir -p sce_sys/about sce_module
+              cp "$SPRX" sce_sys/about/right.sprx
+              cp "$LIBC" sce_module/libc.prx
+              cp "$FIOS" sce_module/libSceFios2.prx
+              make
+            '
 
       - name: Coletar PKG
         run: |
           mkdir -p dist
-          find cmake-build -name '*.pkg' -exec cp -v {} dist/ \;
-          ls -l dist
-          test -n "$(ls dist/*.pkg 2>/dev/null)"
+          cp -v ./*.pkg dist/
           cd dist && sha256sum *.pkg > SHA256SUMS
 
       - name: Enviar artefato
@@ -96,10 +54,3 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
-
-      - name: Diagnóstico (só roda se algo falhar)
-        if: failure()
-        run: |
-          echo "== toolchain =="; ls /opt/pacbrew/ps4/openorbis 2>&1 | head -50
-          echo "== módulos .prx/.sprx =="; find /opt/pacbrew oo-toolchain \( -iname '*.prx' -o -iname '*.sprx' \) 2>/dev/null | head -30
-          echo "== add_pkg =="; grep -rn "add_pkg" /opt/pacbrew/ps4/openorbis 2>/dev/null | head -20
