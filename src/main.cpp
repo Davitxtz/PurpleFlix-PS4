@@ -610,7 +610,6 @@ void drawMain(const App& a, uint32_t now) {
 }
 
 }  // namespace
-
 static void touchFile(const char* path) {
     FILE* f = fopen(path, "w");
     if (f) fclose(f);
@@ -687,15 +686,23 @@ int main(int, char**) {
             }
         }
         if (!splash) {
-            if (!menuMarked) MARK("14_antes_desenhar_menu");
-            handleInput(app, in.trig, now);
-            drawMain(app, now);
-            if (!menuMarked) {
-                MARK("15_menu_desenhado");
-                menuMarked = true;
+            if (netdiag::active()) {
+                netdiag::handle(in.trig);
+                netdiag::draw();
+            } else if (in.trig & pad::kOptions) {
+                netdiag::open();
+            } else {
+                if (!menuMarked) MARK("14_antes_desenhar_menu");
+                handleInput(app, in.trig, now);
+                drawMain(app, now);
+                if (!menuMarked) {
+                    MARK("15_menu_desenhado");
+                    menuMarked = true;
+                }
             }
         }
         SDL_RenderPresent(ren);
+        netdiag::runPending();
 
         if (firstFrame) {
             firstFrame = false;
