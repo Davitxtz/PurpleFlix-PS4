@@ -2,7 +2,7 @@
 
 # ---- Identidade do pacote ----
 TITLE      := PurpleFlix by Davitxtz
-VERSION    := 01.11
+VERSION    := 01.12
 TITLE_ID   := PFLX00002
 CONTENT_ID := IV0000-PFLX00002_00-PURPLEFLIX000000
 
