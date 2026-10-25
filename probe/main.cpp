@@ -1,4 +1,4 @@
-// PurpleFlix Probe: teste do AvPlayer do sistema.
+// PurpleFlix Probe v2: teste do AvPlayer do sistema.
 // ATENCAO: a estrutura de inicializacao abaixo NAO foi verificada no PS4.
 // Layout baseado na documentacao da comunidade (Vita), ajustado para 64 bits.
 #include <stdint.h>
@@ -34,7 +34,7 @@ void out(const char* s) {
     fflush(g_f);
 }
 
-void* pAlloc(void*, uint32_t align, uint32_t size) {
+void* doAlloc(uint32_t align, uint32_t size) {
     uint32_t a = 8;
     while (a < align) a <<= 1;
     void* p = nullptr;
@@ -42,7 +42,23 @@ void* pAlloc(void*, uint32_t align, uint32_t size) {
     return p;
 }
 
+void* pAlloc(void*, uint32_t align, uint32_t size) {
+    char b[120];
+    snprintf(b, sizeof b, "  pedido de memoria GERAL: alinhamento=%u tamanho=%u", (unsigned)align, (unsigned)size);
+    out(b);
+    return doAlloc(align, size);
+}
+
 void pFree(void*, void* p) { free(p); }
+
+void* pAllocTex(void*, uint32_t align, uint32_t size) {
+    char b[120];
+    snprintf(b, sizeof b, "  pedido de memoria de IMAGEM: alinhamento=%u tamanho=%u", (unsigned)align, (unsigned)size);
+    out(b);
+    return doAlloc(align, size);
+}
+
+void pFreeTex(void*, void* p) { free(p); }
 
 struct MemRepl {
     void* obj;
@@ -84,7 +100,7 @@ int main() {
     mkdir(kDir, 0777);
     g_f = fopen("/data/purpleflix/video_probe.txt", "w");
     mark("00_main");
-    out("PurpleFlix Probe - teste do AvPlayer (estrutura NAO verificada no PS4)");
+    out("PurpleFlix Probe v2 - teste do AvPlayer (estrutura NAO verificada no PS4)");
 
     struct stat st;
     bool haveFile = (stat(kFile, &st) == 0);
@@ -104,8 +120,8 @@ int main() {
     d.mem.obj = nullptr;
     d.mem.alloc = pAlloc;
     d.mem.dealloc = pFree;
-    d.mem.allocTex = pAlloc;
-    d.mem.deallocTex = pFree;
+    d.mem.allocTex = pAllocTex;
+    d.mem.deallocTex = pFreeTex;
     d.debugLevel = 0;
     d.basePriority = 700;
     d.numFrameBuffers = 4;
@@ -115,6 +131,7 @@ int main() {
     out(b);
 
     mark("03_antes_init");
+    out("chamando sceAvPlayerInit...");
     int32_t h = ((FnInit)sceAvPlayerInit)(&d);
     mark("04_depois_init");
     snprintf(b, sizeof b, "sceAvPlayerInit = 0x%08X", (unsigned)h);
@@ -137,6 +154,7 @@ int main() {
     }
 
     mark("05_antes_addsource");
+    out("chamando sceAvPlayerAddSource...");
     int32_t rs = ((FnAddSource)sceAvPlayerAddSource)(h, kFile);
     mark("06_depois_addsource");
     snprintf(b, sizeof b, "sceAvPlayerAddSource = 0x%08X", (unsigned)rs);
@@ -149,6 +167,7 @@ int main() {
     out(b);
 
     mark("09_antes_start");
+    out("chamando sceAvPlayerStart...");
     int32_t rst = ((FnStart)sceAvPlayerStart)(h);
     mark("10_depois_start");
     snprintf(b, sizeof b, "sceAvPlayerStart = 0x%08X", (unsigned)rst);
