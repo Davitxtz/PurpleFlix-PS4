@@ -118,3 +118,18 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
+      - name: Exportar referências de memória (kernel)
+        run: |
+          TC="$OO_PS4_TOOLCHAIN"
+          OUT="$GITHUB_WORKSPACE/refs-kernel"
+          mkdir -p "$OUT"
+          cd "$TC/include/orbis"
+          find . -type f -iname '*kernel*' -exec cp --parents {} "$OUT/" \;
+          cd "$GITHUB_WORKSPACE"
+          find refs-kernel -type f | head -40
+
+      - name: Enviar referências de memória
+        uses: actions/upload-artifact@v4
+        with:
+          name: referencias-kernel
+          path: refs-kernel/
