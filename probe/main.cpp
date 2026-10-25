@@ -1,15 +1,17 @@
-// PurpleFlix Probe v2: teste do AvPlayer do sistema.
+// PurpleFlix Probe v3: teste do AvPlayer do sistema.
 // ATENCAO: a estrutura de inicializacao abaixo NAO foi verificada no PS4.
 // Layout baseado na documentacao da comunidade (Vita), ajustado para 64 bits.
+// Callbacks de memoria SEM funcoes da libc (podem ser chamados por threads do sistema).
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include <orbis/AvPlayer.h>
 #include <orbis/Sysmodule.h>
+#include <orbis/libkernel.h>
 
 // Rotulo assembly: evita conflito com o prototype do header.
 extern "C" int32_t pf_load_module(uint16_t id) __asm__("sceSysmoduleLoadModule");
@@ -18,7 +20,107 @@ namespace {
 
 const char* const kDir = "/data/purpleflix";
 const char* const kFile = "/data/purpleflix/teste.mp4";
-FILE* g_f = nullptr;
+int32_t g_fd = -1;
+
+constexpr size_t kPoolSize = 24u << 20;
+alignas(64) uint8_t g_pool[kPoolSize];
+size_t g_poolOff = 0;
+
+uint8_t* g_texBase = nullptr;
+size_t g_texSize = 0;
+size_t g_texOff = 0;
+
+// ---- escrita sem libc ----
+size_t slen(const char* s) {
+    size_t n = 0;
+    while (s[n]) ++n;
+    return n;
+}
+
+void rawWrite(const char* s, size_t n) {
+    if (g_fd >= 0) sceKernelWrite(g_fd, s, n);
+}
+
+void out(const char* s) {
+    rawWrite(s, slen(s));
+    rawWrite("\n", 1);
+}
+
+size_t putS(char* b, size_t n, const char* s) {
+    while (*s) b[n++] = *s++;
+    return n;
+}
+
+size_t putD(char* b, size_t n, uint64_t v) {
+    char t[24];
+    int k = 0;
+    if (v == 0) t[k++] = '0';
+    while (v) {
+        t[k++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (k) b[n++] = t[--k];
+    return n;
+}
+
+size_t putH(char* b, size_t n, uint64_t v) {
+    n = putS(b, n, "0x");
+    for (int i = 15; i >= 0; --i) b[n++] = "0123456789abcdef"[(v >> (i * 4)) & 0xF];
+    return n;
+}
+
+void logReq(const char* what, uint32_t align, uint32_t size, const void* ret, bool withRet) {
+    char b[200];
+    size_t n = 0;
+    n = putS(b, n, "  [callback] ");
+    n = putS(b, n, what);
+    n = putS(b, n, " alinh=");
+    n = putD(b, n, align);
+    n = putS(b, n, " tam=");
+    n = putD(b, n, size);
+    if (withRet) {
+        n = putS(b, n, " ret=");
+        n = putH(b, n, (uint64_t)(uintptr_t)ret);
+    }
+    n = putS(b, n, " thread=");
+    n = putH(b, n, (uint64_t)(uintptr_t)scePthreadSelf());
+    b[n++] = '\n';
+    rawWrite(b, n);
+}
+
+// ---- alocadores sem libc (atomicos) ----
+void* bump(uint8_t* base, size_t total, size_t* offp, uint32_t align, uint32_t size) {
+    size_t a = align < 64 ? 64 : align;
+    size_t cur = __atomic_load_n(offp, __ATOMIC_SEQ_CST);
+    for (;;) {
+        size_t start = (cur + a - 1) & ~(a - 1);
+        size_t nxt = start + size;
+        if (nxt > total) return nullptr;
+        if (__atomic_compare_exchange_n(offp, &cur, nxt, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            return base + start;
+        }
+    }
+}
+
+void* cbAlloc(void*, uint32_t align, uint32_t size) {
+    logReq("GERAL pedido ", align, size, nullptr, false);
+    void* p = bump(g_pool, kPoolSize, &g_poolOff, align, size);
+    logReq("GERAL entregue", align, size, p, true);
+    return p;
+}
+
+void cbFree(void*, void*) {}
+
+void* cbAllocTex(void*, uint32_t align, uint32_t size) {
+    logReq("IMAGEM pedido ", align, size, nullptr, false);
+    void* p = nullptr;
+    if (g_texBase) p = bump(g_texBase, g_texSize, &g_texOff, align, size);
+    else p = bump(g_pool, kPoolSize, &g_poolOff, align, size);
+    logReq("IMAGEM entregue", align, size, p, true);
+    return p;
+}
+
+void cbFreeTex(void*, void*) {}
 
 void mark(const char* name) {
     char p[96];
@@ -27,38 +129,27 @@ void mark(const char* name) {
     if (f) fclose(f);
 }
 
-void out(const char* s) {
-    if (!g_f) return;
-    fputs(s, g_f);
-    fputc('\n', g_f);
-    fflush(g_f);
-}
-
-void* doAlloc(uint32_t align, uint32_t size) {
-    uint32_t a = 8;
-    while (a < align) a <<= 1;
-    void* p = nullptr;
-    if (posix_memalign(&p, a, size) != 0) return nullptr;
-    return p;
-}
-
-void* pAlloc(void*, uint32_t align, uint32_t size) {
-    char b[120];
-    snprintf(b, sizeof b, "  pedido de memoria GERAL: alinhamento=%u tamanho=%u", (unsigned)align, (unsigned)size);
+bool initTexPool() {
+    size_t dm = sceKernelGetDirectMemorySize();
+    size_t len = 64u << 20;
+    off_t phys = 0;
+    int32_t r = sceKernelAllocateDirectMemory(0, (off_t)dm, len, 0x200000, ORBIS_KERNEL_WB_ONION, &phys);
+    char b[200];
+    snprintf(b, sizeof b, "AllocateDirectMemory(64MB) = 0x%08X fisico=0x%llx total=%llu", (unsigned)r,
+             (unsigned long long)phys, (unsigned long long)dm);
     out(b);
-    return doAlloc(align, size);
-}
-
-void pFree(void*, void* p) { free(p); }
-
-void* pAllocTex(void*, uint32_t align, uint32_t size) {
-    char b[120];
-    snprintf(b, sizeof b, "  pedido de memoria de IMAGEM: alinhamento=%u tamanho=%u", (unsigned)align, (unsigned)size);
+    if (r != 0) return false;
+    void* addr = nullptr;
+    r = sceKernelMapDirectMemory(&addr, len, ORBIS_KERNEL_PROT_CPU_RW | ORBIS_KERNEL_PROT_GPU_RW, 0, phys,
+                                 0x200000);
+    snprintf(b, sizeof b, "MapDirectMemory = 0x%08X endereco=%p", (unsigned)r, addr);
     out(b);
-    return doAlloc(align, size);
+    if (r != 0 || !addr) return false;
+    g_texBase = (uint8_t*)addr;
+    g_texSize = len;
+    g_texOff = 0;
+    return true;
 }
-
-void pFreeTex(void*, void* p) { free(p); }
 
 struct MemRepl {
     void* obj;
@@ -98,15 +189,18 @@ typedef int32_t (*FnClose)(int32_t);
 
 int main() {
     mkdir(kDir, 0777);
-    g_f = fopen("/data/purpleflix/video_probe.txt", "w");
+    g_fd = sceKernelOpen("/data/purpleflix/video_probe.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     mark("00_main");
-    out("PurpleFlix Probe v2 - teste do AvPlayer (estrutura NAO verificada no PS4)");
+    out("PurpleFlix Probe v3 - teste do AvPlayer (estrutura NAO verificada no PS4)");
+
+    char b[240];
+    snprintf(b, sizeof b, "thread principal=0x%llx", (unsigned long long)(uintptr_t)scePthreadSelf());
+    out(b);
 
     struct stat st;
     bool haveFile = (stat(kFile, &st) == 0);
-    char b[200];
-    snprintf(b, sizeof b, "arquivo de teste %s: %s (%ld bytes)", kFile,
-             haveFile ? "encontrado" : "AUSENTE", haveFile ? (long)st.st_size : 0L);
+    snprintf(b, sizeof b, "arquivo de teste %s: %s (%ld bytes)", kFile, haveFile ? "encontrado" : "AUSENTE",
+             haveFile ? (long)st.st_size : 0L);
     out(b);
 
     mark("01_antes_modulo");
@@ -115,13 +209,18 @@ int main() {
     snprintf(b, sizeof b, "sceSysmoduleLoadModule(AV_PLAYER) = 0x%08X", (unsigned)r);
     out(b);
 
+    mark("02b_antes_pool_imagem");
+    bool texOk = initTexPool();
+    mark("02c_depois_pool_imagem");
+    out(texOk ? "pool de imagem: memoria direta (OK)" : "pool de imagem: FALHOU, usando memoria comum");
+
     InitData d;
     memset(&d, 0, sizeof d);
     d.mem.obj = nullptr;
-    d.mem.alloc = pAlloc;
-    d.mem.dealloc = pFree;
-    d.mem.allocTex = pAllocTex;
-    d.mem.deallocTex = pFreeTex;
+    d.mem.alloc = cbAlloc;
+    d.mem.dealloc = cbFree;
+    d.mem.allocTex = cbAllocTex;
+    d.mem.deallocTex = cbFreeTex;
     d.debugLevel = 0;
     d.basePriority = 700;
     d.numFrameBuffers = 4;
@@ -140,7 +239,6 @@ int main() {
     if (h <= 0) {
         out("RESULTADO: Init falhou (retorno <= 0). Veja o codigo acima.");
         mark("99_fim_init_falhou");
-        if (g_f) fclose(g_f);
         return 0;
     }
     out("Init OK: o AvPlayer do sistema inicializou em homebrew.");
@@ -149,7 +247,6 @@ int main() {
         out("Sem teste.mp4: parando aqui.");
         ((FnClose)sceAvPlayerClose)(h);
         mark("98_fim_sem_arquivo");
-        if (g_f) fclose(g_f);
         return 0;
     }
 
@@ -175,16 +272,28 @@ int main() {
 
     alignas(16) uint8_t fi[256];
     int frames = 0;
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 60; ++i) {
         memset(fi, 0, sizeof fi);
         int32_t active = ((FnIsActive)sceAvPlayerIsActive)(h);
         int32_t got = ((FnGetVideo)sceAvPlayerGetVideoData)(h, fi);
-        void* ptr = nullptr;
-        memcpy(&ptr, fi, sizeof ptr);
-        snprintf(b, sizeof b, "tentativa %d: ativo=%d, quadro=%d, ponteiro=%p", i, (int)active, (int)got, ptr);
-        out(b);
-        if (got) ++frames;
-        usleep(100000);
+        if (got) {
+            uint64_t ptr = 0, ts = 0;
+            uint32_t w = 0, hh = 0;
+            float asp = 0;
+            memcpy(&ptr, fi, 8);
+            memcpy(&ts, fi + 16, 8);
+            memcpy(&w, fi + 24, 4);
+            memcpy(&hh, fi + 28, 4);
+            memcpy(&asp, fi + 32, 4);
+            snprintf(b, sizeof b, "tentativa %d: ativo=%d quadro=SIM ptr=0x%llx ts=%llu largura=%u altura=%u", i,
+                     (int)active, (unsigned long long)ptr, (unsigned long long)ts, (unsigned)w, (unsigned)hh);
+            out(b);
+            ++frames;
+        } else if (i % 10 == 0) {
+            snprintf(b, sizeof b, "tentativa %d: ativo=%d quadro=nao", i, (int)active);
+            out(b);
+        }
+        sceKernelUsleep(100000);
     }
     mark("11_depois_loop");
     snprintf(b, sizeof b, "RESULTADO: %d tentativas com quadro de video", frames);
@@ -192,6 +301,5 @@ int main() {
 
     ((FnClose)sceAvPlayerClose)(h);
     mark("12_fim");
-    if (g_f) fclose(g_f);
     return 0;
 }
