@@ -40,7 +40,7 @@ jobs:
           mkdir -p sce_sys
           python3 tools/make_icon.py sce_sys/icon0.png
 
-      - name: Compilar e gerar pkg.gp4
+      - name: Compilar o app principal e gerar pkg.gp4
         run: |
           set -e
           TC="$OO_PS4_TOOLCHAIN"
@@ -70,11 +70,15 @@ jobs:
           cp "$LIBC" sce_module/libc.prx
           cp "$FIOS" sce_module/libSceFios2.prx
 
+          echo "FSELF=$FSELF" >> "$GITHUB_ENV"
+          echo "GP4=$GP4" >> "$GITHUB_ENV"
+          echo "PKGTOOL=$PKGTOOL" >> "$GITHUB_ENV"
+
           make pkg.gp4 FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL"
           echo "== pkg.gp4 =="
           cat pkg.gp4
 
-      - name: Gerar PKG (container com OpenSSL antigo)
+      - name: Gerar PKG do app principal (container com OpenSSL antigo)
         run: |
           docker run --rm --user root \
             -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
@@ -83,7 +87,27 @@ jobs:
             bash -c '/workspace/tc/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core pkg_build pkg.gp4 .'
           ls -l ./*.pkg
 
-      - name: Coletar PKG
+      - name: Compilar o PurpleFlix Probe e gerar pkg.gp4
+        run: |
+          set -e
+          rm -f eboot.bin pkg.gp4 sce_sys/param.sfo
+          make INTDIR=build-probe SRCDIR=probe PROJ=probe \
+            TITLE='PurpleFlix Probe' VERSION=01.00 TITLE_ID=PFLX00003 \
+            CONTENT_ID=IV0000-PFLX00003_00-PURPLEPROBE00000 \
+            FSELF="$FSELF" GP4="$GP4" PKGTOOL="$PKGTOOL" pkg.gp4
+          echo "== pkg.gp4 do probe =="
+          cat pkg.gp4
+
+      - name: Gerar PKG do Probe (container)
+        run: |
+          docker run --rm --user root \
+            -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
+            -w /workspace -v "$PWD":/workspace \
+            openorbisofficial/toolchain:latest \
+            bash -c '/workspace/tc/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core pkg_build pkg.gp4 .'
+          ls -l ./*.pkg
+
+      - name: Coletar PKGs
         run: |
           mkdir -p dist
           cp -v ./*.pkg dist/
@@ -94,37 +118,3 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
-      - name: Exportar referências de rede (headers e sample net_http)
-        run: |
-          TC="$OO_PS4_TOOLCHAIN"
-          mkdir -p refs
-          cp -r "$TC/samples/net_http" refs/ || echo "sample net_http nao encontrado"
-          for h in Http.h Net.h NetCtl.h Ssl.h Sysmodule.h SystemService.h; do
-            f=$(find "$TC/include" -iname "$h" | head -1)
-            if [ -n "$f" ]; then cp "$f" refs/; else echo "nao achei $h"; fi
-          done
-          ls -laR refs | head -60
-
-      - name: Enviar referências
-        uses: actions/upload-artifact@v4
-        with:
-          name: referencias-rede
-          path: refs/
-      - name: Exportar referências de vídeo
-        run: |
-          TC="$OO_PS4_TOOLCHAIN"
-          OUT="$GITHUB_WORKSPACE/refs-video"
-          mkdir -p "$OUT"
-          ls "$TC/samples" > "$OUT/samples-listing.txt"
-          (cd "$TC/include" && find . -type f | sort) > "$OUT/include-listing.txt"
-          ls "$TC/lib" | grep -i -E 'avplayer|vdec|videodec|audiodec|audioout|videoout|jpeg|png' > "$OUT/lib-listing.txt" || true
-          cd "$TC/include"
-          find . -type f \( -iname '*avplayer*' -o -iname '*videodec*' -o -iname '*vdec*' -o -iname '*audiodec*' -o -iname '*audioout*' -o -iname '*videoout*' -o -iname '*jpeg*' \) -exec cp --parents {} "$OUT/" \;
-          cd "$GITHUB_WORKSPACE"
-          find refs-video -type f | head -60
-
-      - name: Enviar referências de vídeo
-        uses: actions/upload-artifact@v4
-        with:
-          name: referencias-video
-          path: refs-video/
