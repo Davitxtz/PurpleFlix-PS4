@@ -49,9 +49,10 @@ void logMsg(const char* s) {
 }
 
 // ---------- catálogo (exemplo local + dados reais da TMDB quando disponíveis) ----------
-constexpr int kMovieCount = 14;
-constexpr int kSeriesCount = 14;
-constexpr int kTitleCount = kMovieCount + kSeriesCount;
+constexpr int kPerKind = 100;          // máximo de títulos por tipo (5 páginas de 20)
+constexpr int kSeriesBase = kPerKind;  // índices das séries começam aqui
+constexpr int kTitleCount = kPerKind * 2;
+constexpr int kExamples = 14;
 
 struct Title {
     char name[64];
@@ -62,6 +63,11 @@ struct Title {
     bool real;  // true = veio da TMDB
 };
 Title g_titles[kTitleCount];
+
+int g_count[2] = {kExamples, kExamples};  // 0 = filmes, 1 = séries
+int g_pageLoaded[2] = {0, 0};
+bool g_more[2] = {false, false};
+int g_pendingMore = -1;
 
 const char* const kGenres[7] = {"Ação", "Drama", "Comédia", "Ficção", "Terror", "Aventura", "Animação"};
 const char* const kSynopsis =
@@ -75,23 +81,27 @@ tmdb::ListResult g_listMovies;
 tmdb::ListResult g_listSeries;
 
 void initCatalog() {
-    for (int i = 0; i < kTitleCount; ++i) {
-        Title& t = g_titles[i];
-        bool series = i >= kMovieCount;
-        int n = series ? (i - kMovieCount + 1) : (i + 1);
-        t.kind = series ? "Série" : "Filme";
-        snprintf(t.name, sizeof t.name, "%s de exemplo %02d", t.kind, n);
-        t.genre = kGenres[i % 7];
-        snprintf(t.year, sizeof t.year, "%d", 2012 + (i * 3) % 13);
-        t.overview[0] = 0;
-        t.real = false;
+    for (int k = 0; k < 2; ++k) {
+        for (int i = 0; i < kExamples; ++i) {
+            Title& t = g_titles[k * kPerKind + i];
+            t.kind = k ? "Série" : "Filme";
+            snprintf(t.name, sizeof t.name, "%s de exemplo %02d", t.kind, i + 1);
+            t.genre = kGenres[(i + k * 3) % 7];
+            snprintf(t.year, sizeof t.year, "%d", 2012 + (i * 3) % 13);
+            t.overview[0] = 0;
+            t.real = false;
+        }
     }
 }
 
-void fillFromTmdb(const tmdb::ListResult& r, int base, int count, const char* kind) {
-    for (int i = 0; i < count && i < r.count; ++i) {
+// Acrescenta os itens da página ao tipo k. Retorna quantos foram adicionados.
+int appendFromTmdb(const tmdb::ListResult& r, int k) {
+    const char* kind = k ? "Série" : "Filme";
+    int base = k * kPerKind;
+    int added = 0;
+    for (int i = 0; i < r.count && g_count[k] < kPerKind; ++i) {
         const tmdb::Item& it = r.items[i];
-        Title& t = g_titles[base + i];
+        Title& t = g_titles[base + g_count[k]];
         snprintf(t.name, sizeof t.name, "%s", it.title[0] ? it.title : "(sem título)");
         t.kind = kind;
         t.genre = "Popular";
@@ -99,14 +109,27 @@ void fillFromTmdb(const tmdb::ListResult& r, int base, int count, const char* ki
         snprintf(t.overview, sizeof t.overview, "%s",
                  it.overview[0] ? it.overview : "Sem sinopse disponível.");
         t.real = true;
+        ++g_count[k];
+        ++added;
     }
+    return added;
 }
 
 void loadOnlineCatalog() {
     bool okM = tmdb::fetchPopular("movie", "pt-BR", 1, g_listMovies);
-    if (okM) fillFromTmdb(g_listMovies, 0, kMovieCount, "Filme");
+    if (okM) {
+        g_count[0] = 0;  // descarta os exemplos
+        appendFromTmdb(g_listMovies, 0);
+        g_pageLoaded[0] = 1;
+        g_more[0] = g_count[0] < kPerKind;
+    }
     bool okS = tmdb::fetchPopular("tv", "pt-BR", 1, g_listSeries);
-    if (okS) fillFromTmdb(g_listSeries, kMovieCount, kSeriesCount, "Série");
+    if (okS) {
+        g_count[1] = 0;
+        appendFromTmdb(g_listSeries, 1);
+        g_pageLoaded[1] = 1;
+        g_more[1] = g_count[1] < kPerKind;
+    }
 
     if (okM || okS) {
         g_catalogState = 1;
@@ -117,6 +140,17 @@ void loadOnlineCatalog() {
         snprintf(g_catalogMsg, sizeof g_catalogMsg, "%s",
                  g_listMovies.message[0] ? g_listMovies.message : "Sem rede ou sem chave.");
     }
+}
+
+// Carrega a próxima página do tipo k (0 = filmes, 1 = séries).
+void loadMore(int k) {
+    if (!g_more[k]) return;
+    tmdb::ListResult& r = (k == 0) ? g_listMovies : g_listSeries;
+    int page = g_pageLoaded[k] + 1;
+    bool ok = tmdb::fetchPopular(k == 0 ? "movie" : "tv", "pt-BR", page, r);
+    if (ok && appendFromTmdb(r, k) > 0) g_pageLoaded[k] = page;
+    else g_more[k] = false;
+    if (g_count[k] >= kPerKind) g_more[k] = false;
 }
 
 Color posterTop(int id) {
@@ -238,6 +272,7 @@ struct App {
     Tab tab = TAB_HOME;
     bool inContent = false;
     int row = 0, col = 0;
+    int scroll = 0;  // primeira linha visível nas grades
     int detailId = -1;
     int detailBtn = 0;
     char query[28] = {0};
@@ -281,24 +316,27 @@ void updateSearch(App& a) {
     a.nres = 0;
     a.totalRes = 0;
     if (a.qlen == 0) return;
-    for (int i = 0; i < kTitleCount; ++i) {
-        if (containsCI(g_titles[i].name, a.query)) {
-            if (a.nres < kMaxResults) a.res[a.nres++] = i;
-            ++a.totalRes;
+    for (int k = 0; k < 2; ++k) {
+        for (int i = 0; i < g_count[k]; ++i) {
+            int id = k * kPerKind + i;
+            if (containsCI(g_titles[id].name, a.query)) {
+                if (a.nres < kMaxResults) a.res[a.nres++] = id;
+                ++a.totalRes;
+            }
         }
     }
 }
 
 int homeId(int i) {
-    static const int ids[7] = {0, 14, 1, 15, 2, 16, 3};
-    return ids[i];
+    // alterna: filme 0, série 0, filme 1, série 1, ...
+    return (i % 2 == 0) ? (i / 2) : (kSeriesBase + i / 2);
 }
 
 int rowCount(const App& a) {
     switch (a.tab) {
         case TAB_HOME:   return 1;
-        case TAB_MOVIES:
-        case TAB_SERIES: return 2;
+        case TAB_MOVIES: return (g_count[0] + 6) / 7;
+        case TAB_SERIES: return (g_count[1] + 6) / 7;
         case TAB_SEARCH: return kKeyRows + (a.nres > 0 ? 1 : 0);
         case TAB_INFO:   return kLinkCount;
         default:         return 0;
@@ -307,9 +345,13 @@ int rowCount(const App& a) {
 
 int colCount(const App& a, int row) {
     switch (a.tab) {
-        case TAB_HOME:
+        case TAB_HOME: return 7;
         case TAB_MOVIES:
-        case TAB_SERIES: return 7;
+        case TAB_SERIES: {
+            int k = (a.tab == TAB_SERIES) ? 1 : 0;
+            int n = g_count[k] - row * 7;
+            return n > 7 ? 7 : (n < 0 ? 0 : n);
+        }
         case TAB_SEARCH: return row < kKeyRows ? kKeyCols[row] : a.nres;
         case TAB_INFO:   return 1;
         default:         return 0;
@@ -318,8 +360,8 @@ int colCount(const App& a, int row) {
 
 int posterId(const App& a, int row, int col) {
     if (a.tab == TAB_HOME) return homeId(col);
-    int base = (a.tab == TAB_SERIES) ? kMovieCount : 0;
-    return base + row * 7 + col;
+    int k = (a.tab == TAB_SERIES) ? 1 : 0;
+    return k * kPerKind + row * 7 + col;
 }
 
 void clampFocus(App& a) {
@@ -331,11 +373,23 @@ void clampFocus(App& a) {
     if (a.col < 0) a.col = 0;
 }
 
+// Mantém a linha em foco dentro das 2 linhas visíveis das grades.
+void fixScroll(App& a) {
+    if (a.tab != TAB_MOVIES && a.tab != TAB_SERIES) {
+        a.scroll = 0;
+        return;
+    }
+    if (a.row < a.scroll) a.scroll = a.row;
+    if (a.row > a.scroll + 1) a.scroll = a.row - 1;
+    if (a.scroll < 0) a.scroll = 0;
+}
+
 void switchTab(App& a, int delta) {
     a.tab = (Tab)((a.tab + delta + TAB_COUNT) % TAB_COUNT);
     a.inContent = false;
     a.row = 0;
     a.col = 0;
+    a.scroll = 0;
 }
 
 void toast(App& a, const char* l1, const char* l2, uint32_t now) {
@@ -427,20 +481,29 @@ void handleInput(App& a, uint32_t trig, uint32_t now) {
             a.inContent = true;
             a.row = 0;
             a.col = 0;
+            a.scroll = 0;
         }
     } else {
         int rc = rowCount(a);
+        bool isGrid = (a.tab == TAB_MOVIES || a.tab == TAB_SERIES);
+        int gk = (a.tab == TAB_SERIES) ? 1 : 0;
         if (trig & pad::kUp) {
             if (a.row > 0) {
                 --a.row;
                 clampFocus(a);
+                fixScroll(a);
             } else {
                 a.inContent = false;
             }
         }
-        if ((trig & pad::kDown) && a.row < rc - 1) {
-            ++a.row;
-            clampFocus(a);
+        if (trig & pad::kDown) {
+            if (a.row < rc - 1) {
+                ++a.row;
+                clampFocus(a);
+                fixScroll(a);
+            } else if (isGrid && g_more[gk] && g_pendingMore < 0) {
+                g_pendingMore = gk;  // carrega mais depois de desenhar o quadro
+            }
         }
         if ((trig & pad::kLeft) && a.col > 0) --a.col;
         if ((trig & pad::kRight) && a.col < colCount(a, a.row) - 1) ++a.col;
@@ -533,9 +596,18 @@ void drawHome(const App& a) {
 
 void drawGrid(const App& a, const char* title) {
     textShadow(100, 160, title, 6, C_TEXT);
-    for (int r = 0; r < 2; ++r) {
-        for (int c = 0; c < 7; ++c) {
-            drawPoster(100 + c * 250, 240 + r * 370, 220, 330, posterId(a, r, c),
+    int k = (a.tab == TAB_SERIES) ? 1 : 0;
+    int rows = rowCount(a);
+    char info[64];
+    snprintf(info, sizeof info, "%d títulos - linha %d/%d", g_count[k],
+             (a.inContent ? a.row : a.scroll) + 1, rows > 0 ? rows : 1);
+    text(W - 100 - textWidth(info, 3), 175, info, 3, C_DIM);
+    for (int vr = 0; vr < 2; ++vr) {
+        int r = a.scroll + vr;
+        if (r >= rows) break;
+        int cc = colCount(a, r);
+        for (int c = 0; c < cc; ++c) {
+            drawPoster(100 + c * 250, 240 + vr * 370, 220, 330, posterId(a, r, c),
                        a.inContent && a.row == r && a.col == c, 3);
         }
     }
@@ -648,6 +720,8 @@ void drawFooter(const App& a, uint32_t now) {
         frame(100, 900, 1720, 90, 2, C_PURPLE);
         text(130, 917, a.toast1, 3, C_TEXT);
         text(130, 953, a.toast2, 3, C_DIM);
+    } else if (g_pendingMore >= 0) {
+        text(100, 930, "Carregando mais títulos...", 3, C_BRIGHT);
     } else if (g_catalogState == 0) {
         text(100, 930, "Carregando catálogo online...", 3, C_BRIGHT);
     } else if (!a.padOk) {
@@ -790,6 +864,20 @@ int main(int, char**) {
             uint32_t t2 = SDL_GetTicks();
             if (g_catalogState == 1) toast(app, "Catálogo online carregado (TMDB).", g_catalogMsg, t2);
             else toast(app, "Usando catálogo de exemplo.", g_catalogMsg, t2);
+        }
+
+        // Carrega mais uma página quando o usuário chega ao fim da grade.
+        if (g_pendingMore >= 0) {
+            int k = g_pendingMore;
+            g_pendingMore = -1;
+            MARK("19_carregando_mais");
+            loadMore(k);
+            int rc = rowCount(app);
+            if (app.row < rc - 1) {
+                ++app.row;
+                clampFocus(app);
+                fixScroll(app);
+            }
         }
 
         if (firstFrame) {
