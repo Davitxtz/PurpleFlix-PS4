@@ -14,6 +14,7 @@
 #include "pad.hpp"
 #include "netdiag.hpp"
 #include "tmdb.hpp"
+#include "poster.hpp"
 
 using namespace gfx;
 
@@ -109,6 +110,7 @@ int appendFromTmdb(const tmdb::ListResult& r, int k) {
         snprintf(t.overview, sizeof t.overview, "%s",
                  it.overview[0] ? it.overview : "Sem sinopse disponível.");
         t.real = true;
+        poster::setPath(base + g_count[k], it.poster);
         ++g_count[k];
         ++added;
     }
@@ -565,8 +567,10 @@ void drawNav(const App& a) {
 void drawPoster(int x, int y, int w, int h, int id, bool focused, int ts) {
     const Title& t = g_titles[id];
     vgradient(x, y, w, h, posterTop(id), posterBottom(id));
+    bool hasImage = poster::tryDraw(id, x, y, w, h);
     if (focused) frame(x - 8, y - 8, w + 16, h + 16, 6, C_BRIGHT);
     else frame(x, y, w, h, 2, C_DEEP);
+    if (hasImage) return;
     if (!t.real) text(x + 12, y + 12, "EXEMPLO", 2, Color{255, 255, 255, 150});
     int s = wordsFit(t.name, ts, w - 24) ? ts : (ts > 1 ? ts - 1 : ts);
     drawWrapped(x + 12, y + h / 2, w - 24, t.name, s, C_TEXT, 3);
@@ -804,6 +808,7 @@ int main(int, char**) {
     }
     MARK("10_renderer_ok");
     gfx::init(ren);
+    poster::init(ren);
     MARK("11_gfx_init_ok");
 
     initCatalog();
@@ -854,6 +859,7 @@ int main(int, char**) {
         }
         SDL_RenderPresent(ren);
         netdiag::runPending();
+        poster::loadOne();
 
         // Carrega o catálogo online UMA vez, depois do primeiro quadro do menu.
         if (!splash && menuMarked && !g_catalogTried && !netdiag::active()) {
