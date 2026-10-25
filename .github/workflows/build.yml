@@ -110,3 +110,21 @@ jobs:
         with:
           name: referencias-rede
           path: refs/
+      - name: Exportar referências de vídeo
+        run: |
+          TC="$OO_PS4_TOOLCHAIN"
+          OUT="$GITHUB_WORKSPACE/refs-video"
+          mkdir -p "$OUT"
+          ls "$TC/samples" > "$OUT/samples-listing.txt"
+          (cd "$TC/include" && find . -type f | sort) > "$OUT/include-listing.txt"
+          ls "$TC/lib" | grep -i -E 'avplayer|vdec|videodec|audiodec|audioout|videoout|jpeg|png' > "$OUT/lib-listing.txt" || true
+          cd "$TC/include"
+          find . -type f \( -iname '*avplayer*' -o -iname '*videodec*' -o -iname '*vdec*' -o -iname '*audiodec*' -o -iname '*audioout*' -o -iname '*videoout*' -o -iname '*jpeg*' \) -exec cp --parents {} "$OUT/" \;
+          cd "$GITHUB_WORKSPACE"
+          find refs-video -type f | head -60
+
+      - name: Enviar referências de vídeo
+        uses: actions/upload-artifact@v4
+        with:
+          name: referencias-video
+          path: refs-video/
