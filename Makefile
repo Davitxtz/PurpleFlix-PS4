@@ -38,7 +38,7 @@ endif
 
 LIBMODULES := $(wildcard sce_module/*) $(wildcard *.mp4)
 
-CFLAGS   := --target=x86_64-pc-freebsd12-elf -02 -fPIC -funwind-tables -c \
+CFLAGS   := --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables -c \
             -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
 CXXFLAGS := $(CFLAGS) -isystem $(TOOLCHAIN)/include/c++/v1 -isystem $(TOOLCHAIN)/include/SDL2
 
