@@ -36,7 +36,7 @@ ifeq ($(strip $(OBJS)),)
 $(error Nenhum .cpp encontrado em $(SRCDIR)/)
 endif
 
-LIBMODULES := $(wildcard sce_module/*) $(wildcard media/*)
+LIBMODULES := $(wildcard sce_module/*) $(wildcard *.mp4)
 
 CFLAGS   := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c \
             -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
