@@ -127,3 +127,17 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
+      - name: Exportar referências de áudio
+        run: |
+          TC="$OO_PS4_TOOLCHAIN"
+          OUT="$GITHUB_WORKSPACE/refs-audio"
+          mkdir -p "$OUT"
+          cp "$TC/include/orbis/_types/audio_out.h" "$OUT/" || true
+          cp "$TC/include/orbis/_types/user.h" "$OUT/" || true
+          ls -l "$OUT"
+
+      - name: Enviar referências de áudio
+        uses: actions/upload-artifact@v4
+        with:
+          name: referencias-audio
+          path: refs-audio/
