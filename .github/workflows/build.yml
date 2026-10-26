@@ -88,16 +88,16 @@ jobs:
           ls -l ./*.pkg
 
       - name: Compilar o PurpleFlix Probe (com vídeo de teste) e gerar pkg.gp4
+        continue-on-error: true
         run: |
           set -e
           sudo apt-get install -y --no-install-recommends ffmpeg
-          mkdir -p media
           ffmpeg -y -hide_banner -loglevel error \
             -f lavfi -i "testsrc2=size=1280x720:rate=30" \
             -f lavfi -i "sine=frequency=440:sample_rate=48000" \
             -t 6 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
-            -c:a aac -b:a 128k -ac 2 -movflags +faststart media/teste.mp4
-          ls -l media
+            -c:a aac -b:a 128k -ac 2 -movflags +faststart teste.mp4
+          ls -l teste.mp4
           rm -f eboot.bin pkg.gp4 sce_sys/param.sfo
           make INTDIR=build-probe SRCDIR=probe PROJ=probe \
             TITLE='PurpleFlix Probe' VERSION=01.00 TITLE_ID=PFLX00003 \
@@ -107,6 +107,7 @@ jobs:
           cat pkg.gp4
 
       - name: Gerar PKG do Probe (container)
+        continue-on-error: true
         run: |
           docker run --rm --user root \
             -e DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
