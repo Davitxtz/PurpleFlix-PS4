@@ -19,7 +19,7 @@ extern "C" int32_t pf_load_module(uint16_t id) __asm__("sceSysmoduleLoadModule")
 namespace {
 
 const char* const kDir = "/data/purpleflix";
-const char* const kFileApp = "/app0/media/teste.mp4";
+const char* const kFileApp = "/app0/teste.mp4";
 const char* const kFileData = "/data/purpleflix/teste.mp4";
 int32_t g_fd = -1;
 
