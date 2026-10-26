@@ -1,6 +1,5 @@
-// PurpleFlix Probe v7: confirma quadros do AvPlayer, mede conversao NV12->RGBA, despeja quadros.
+// PurpleFlix Probe v8: audio real (SceAudioOut em thread propria) + video no ritmo do audio.
 // ATENCAO: a estrutura de inicializacao abaixo NAO foi verificada no PS4.
-// Layout baseado na documentacao da comunidade (Vita), ajustado para 64 bits.
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <orbis/AudioOut.h>
 #include <orbis/AvPlayer.h>
 #include <orbis/Sysmodule.h>
 #include <orbis/libkernel.h>
@@ -35,7 +35,6 @@ struct Block {
 Block g_gen = {nullptr, 0, 0};
 Block g_tex = {nullptr, 0, 0};
 
-// Buffers para medir o custo de copia e conversao (720p).
 constexpr size_t kMaxW = 1280;
 constexpr size_t kMaxH = 720;
 alignas(64) uint8_t g_copy[kMaxW * kMaxH * 3 / 2 + 4096];
@@ -45,7 +44,16 @@ uint64_t g_tscFreq = 0;
 inline uint64_t rdtsc() { return __builtin_ia32_rdtsc(); }
 uint64_t usFrom(uint64_t ticks) { return g_tscFreq ? (ticks * 1000000ull) / g_tscFreq : 0; }
 
-// ---- escrita sem libc (segura para threads do player) ----
+// Estado compartilhado com a thread de audio.
+int32_t g_av = 0;
+int g_stop = 0;
+int g_audioDone = 0;
+int g_audioFailed = 0;
+uint64_t g_audioMs = 0;
+uint64_t g_audioWallMs = 0;
+int g_audioChunks = 0;
+
+// ---- escrita sem libc (segura em qualquer thread) ----
 size_t slen(const char* s) {
     size_t n = 0;
     while (s[n]) ++n;
@@ -82,6 +90,24 @@ size_t putH(char* b, size_t n, uint64_t v) {
     n = putS(b, n, "0x");
     for (int i = 15; i >= 0; --i) b[n++] = "0123456789abcdef"[(v >> (i * 4)) & 0xF];
     return n;
+}
+
+void logHex(const char* label, uint32_t v) {
+    char b[200];
+    size_t n = putS(b, 0, label);
+    n = putS(b, n, " = ");
+    n = putH(b, n, v);
+    b[n++] = '\n';
+    rawWrite(b, n);
+}
+
+void logDec(const char* label, uint64_t v) {
+    char b[200];
+    size_t n = putS(b, 0, label);
+    n = putS(b, n, " = ");
+    n = putD(b, n, v);
+    b[n++] = '\n';
+    rawWrite(b, n);
 }
 
 void logReq(const char* what, uint32_t align, uint32_t size, const void* ret) {
@@ -162,51 +188,30 @@ bool initBlock(Block& blk, const char* name, size_t want, size_t minSize) {
     return false;
 }
 
-void dumpWords(const char* label, const uint8_t* p, int words32) {
-    char b[300];
-    for (int i = 0; i < words32; i += 6) {
-        int cnt = (words32 - i < 6) ? (words32 - i) : 6;
-        uint32_t w[6] = {0, 0, 0, 0, 0, 0};
-        memcpy(w, p + i * 4, (size_t)cnt * 4);
-        int n = snprintf(b, sizeof b, "%s +%03d:", label, i * 4);
-        for (int k = 0; k < cnt; ++k) n += snprintf(b + n, sizeof b - (size_t)n, " %08x", (unsigned)w[k]);
-        out(b);
-    }
-}
-
-// Grava um bloco de memoria em arquivo (para eu analisar a imagem no servidor).
-void dumpFile(const char* path, const uint8_t* data, size_t len) {
-    int32_t fd = sceKernelOpen(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (fd < 0) {
-        out("falha ao criar arquivo de despejo");
-        return;
-    }
-    size_t off = 0;
-    while (off < len) {
-        size_t n = sceKernelWrite(fd, data + off, len - off);
-        if (n == 0 || n > len - off) break;
-        off += n;
-    }
-    sceKernelClose(fd);
-}
-
 inline uint8_t clamp8(int v) { return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
-// Conversao NV12 -> RGBA (BT.601, inteiros). Assume plano Y seguido de UV intercalado.
+// Conversao NV12 -> RGBA (BT.601, inteiros). Plano Y seguido de UV intercalado (confirmado).
 void nv12ToRgba(const uint8_t* y, const uint8_t* uv, int w, int h, uint8_t* dst) {
     for (int j = 0; j < h; ++j) {
         const uint8_t* yr = y + (size_t)j * w;
         const uint8_t* uvr = uv + (size_t)(j >> 1) * w;
         uint8_t* d = dst + (size_t)j * w * 4;
-        for (int i = 0; i < w; ++i) {
-            int Y = (int)yr[i] - 16;
-            int U = (int)uvr[i & ~1] - 128;
-            int V = (int)uvr[(i & ~1) + 1] - 128;
-            int c = 298 * Y;
-            d[4 * i + 0] = clamp8((c + 409 * V + 128) >> 8);
-            d[4 * i + 1] = clamp8((c - 100 * U - 208 * V + 128) >> 8);
-            d[4 * i + 2] = clamp8((c + 516 * U + 128) >> 8);
+        for (int i = 0; i < w; i += 2) {
+            int U = (int)uvr[i] - 128;
+            int V = (int)uvr[i + 1] - 128;
+            int rv = 409 * V + 128;
+            int guv = -100 * U - 208 * V + 128;
+            int bu = 516 * U + 128;
+            int c0 = 298 * ((int)yr[i] - 16);
+            int c1 = 298 * ((int)yr[i + 1] - 16);
+            d[4 * i + 0] = clamp8((c0 + rv) >> 8);
+            d[4 * i + 1] = clamp8((c0 + guv) >> 8);
+            d[4 * i + 2] = clamp8((c0 + bu) >> 8);
             d[4 * i + 3] = 255;
+            d[4 * i + 4] = clamp8((c1 + rv) >> 8);
+            d[4 * i + 5] = clamp8((c1 + guv) >> 8);
+            d[4 * i + 6] = clamp8((c1 + bu) >> 8);
+            d[4 * i + 7] = 255;
         }
     }
 }
@@ -243,9 +248,58 @@ typedef int32_t (*FnStart)(int32_t);
 typedef int32_t (*FnStop)(int32_t);
 typedef int32_t (*FnIsActive)(int32_t);
 typedef int32_t (*FnStreamCount)(int32_t);
-typedef int32_t (*FnGetStreamInfo)(int32_t, uint32_t, void*);
 typedef int32_t (*FnGetFrame)(int32_t, void*);
 typedef int32_t (*FnClose)(int32_t);
+
+// ---- thread de audio: toca cada pedaco pela SceAudioOut (sem libc) ----
+void* audioThread(void*) {
+    uint64_t t0 = rdtsc();
+    int32_t r = sceAudioOutInit();
+    logHex("audio: sceAudioOutInit", (uint32_t)r);
+    int32_t ah = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 1024, 48000,
+                                 ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    logHex("audio: sceAudioOutOpen (handle)", (uint32_t)ah);
+    if (ah < 0) {
+        __atomic_store_n(&g_audioFailed, 1, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&g_audioDone, 1, __ATOMIC_SEQ_CST);
+        return nullptr;
+    }
+    alignas(16) uint8_t ai[512];
+    int misses = 0;
+    int logged = 0;
+    for (;;) {
+        if (__atomic_load_n(&g_stop, __ATOMIC_SEQ_CST)) break;
+        memset(ai, 0, sizeof ai);
+        int32_t got = ((FnGetFrame)sceAvPlayerGetAudioData)(g_av, ai);
+        if ((got & 0xFF) != 0) {
+            misses = 0;
+            uint64_t ptr = 0, ts = 0;
+            uint32_t size = 0;
+            memcpy(&ptr, ai, 8);
+            memcpy(&ts, ai + 16, 8);
+            memcpy(&size, ai + 32, 4);
+            if (ptr != 0 && size == 4096) {
+                int32_t o = sceAudioOutOutput(ah, (const void*)(uintptr_t)ptr);
+                __atomic_store_n(&g_audioMs, ts, __ATOMIC_SEQ_CST);
+                int c = __atomic_add_fetch(&g_audioChunks, 1, __ATOMIC_SEQ_CST);
+                if (logged < 3 || o < 0) {
+                    ++logged;
+                    logHex("audio: sceAudioOutOutput", (uint32_t)o);
+                }
+                if (c == 1) logDec("audio: primeiro pedaco enviado em ms (tempo real)", usFrom(rdtsc() - t0) / 1000);
+            }
+        } else {
+            ++misses;
+            int32_t active = ((FnIsActive)sceAvPlayerIsActive)(g_av);
+            if (active == 0 && misses > 30) break;
+            sceKernelUsleep(2000);
+        }
+    }
+    sceAudioOutClose(ah);
+    __atomic_store_n(&g_audioWallMs, usFrom(rdtsc() - t0) / 1000, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_audioDone, 1, __ATOMIC_SEQ_CST);
+    return nullptr;
+}
 
 int readRun() {
     FILE* f = fopen(kRunFile, "r");
@@ -278,11 +332,10 @@ int main() {
     snprintf(path, sizeof path, "%s/video_probe_run%d.txt", kDir, run);
     g_fd = sceKernelOpen(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 
-    char b[360];
-    snprintf(b, sizeof b, "PurpleFlix Probe v7 - execucao %d (sem EnableStream; retorno testado so no byte baixo)", run);
+    char b[400];
+    snprintf(b, sizeof b, "PurpleFlix Probe v8 - execucao %d (audio real + video no ritmo do audio)", run);
     out(b);
-    snprintf(b, sizeof b, "frequencia do TSC = %llu Hz", (unsigned long long)g_tscFreq);
-    out(b);
+    logDec("frequencia do TSC (Hz)", g_tscFreq);
 
     const char* file = kFileApp;
     struct stat st;
@@ -295,8 +348,7 @@ int main() {
     out(b);
 
     int32_t r = pf_load_module(ORBIS_SYSMODULE_AV_PLAYER);
-    snprintf(b, sizeof b, "sceSysmoduleLoadModule(AV_PLAYER) = 0x%08X", (unsigned)r);
-    out(b);
+    logHex("sceSysmoduleLoadModule(AV_PLAYER)", (uint32_t)r);
 
     bool genOk = initBlock(g_gen, "GERAL", 160u << 20, 64u << 20);
     bool texOk = initBlock(g_tex, "IMAGEM", 256u << 20, 64u << 20);
@@ -317,139 +369,162 @@ int main() {
     d.lang = "eng";
 
     out("chamando sceAvPlayerInit...");
-    int32_t h = ((FnInit)sceAvPlayerInit)(&d);
-    snprintf(b, sizeof b, "sceAvPlayerInit = 0x%08X", (unsigned)h);
-    out(b);
-    if (h <= 0 || !haveFile) {
+    g_av = ((FnInit)sceAvPlayerInit)(&d);
+    logHex("sceAvPlayerInit", (uint32_t)g_av);
+    if (g_av <= 0 || !haveFile) {
         out("RESULTADO: Init falhou ou arquivo ausente. Parando.");
         return 0;
     }
 
     out("chamando sceAvPlayerAddSource...");
-    int32_t rs = ((FnAddSource)sceAvPlayerAddSource)(h, file);
-    snprintf(b, sizeof b, "sceAvPlayerAddSource = 0x%08X", (unsigned)rs);
-    out(b);
+    int32_t rs = ((FnAddSource)sceAvPlayerAddSource)(g_av, file);
+    logHex("sceAvPlayerAddSource", (uint32_t)rs);
 
     int32_t sc = 0;
-    int waited = 0;
     for (int i = 0; i < 50; ++i) {
-        sc = ((FnStreamCount)sceAvPlayerStreamCount)(h);
+        sc = ((FnStreamCount)sceAvPlayerStreamCount)(g_av);
         if (sc > 0) break;
         sceKernelUsleep(100000);
-        ++waited;
     }
-    snprintf(b, sizeof b, "StreamCount = %d (apos esperar %d ms)", (int)sc, waited * 100);
-    out(b);
+    logDec("StreamCount", (uint64_t)sc);
 
     out("chamando sceAvPlayerStart...");
-    int32_t rst = ((FnStart)sceAvPlayerStart)(h);
-    snprintf(b, sizeof b, "sceAvPlayerStart = 0x%08X", (unsigned)rst);
-    out(b);
+    int32_t rst = ((FnStart)sceAvPlayerStart)(g_av);
+    logHex("sceAvPlayerStart", (uint32_t)rst);
 
+    // Thread de audio (pilha de 256 KB).
+    OrbisPthreadAttr attr;
+    scePthreadAttrInit(&attr);
+    scePthreadAttrSetstacksize(&attr, 256 * 1024);
+    OrbisPthread thr;
+    int32_t rt = scePthreadCreate(&thr, &attr, audioThread, nullptr, "pf_audio");
+    logHex("scePthreadCreate(audio)", (uint32_t)rt);
+    bool haveThread = (rt == 0);
+
+    // ---- laco de video: segura cada quadro ate chegar a hora dele (relogio = audio enviado) ----
     alignas(16) uint8_t fi[512];
-    alignas(16) uint8_t ai[512];
-    int vTrue = 0, aTrue = 0, aDumps = 0, tsLogged = 0, convN = 0;
-    bool dumpedA = false, dumpedB = false;
-    uint64_t firstTs = 0, lastTs = 0;
-    uint64_t copyUs = 0, convUs = 0, convMaxUs = 0;
-    int nextPrint = 1;
+    bool havePending = false;
+    uint64_t pPtr = 0, pTs = 0;
+    uint32_t pW = 0, pH = 0;
+    uint64_t lastTs = 0;
+    int presented = 0, gaps = 0, lateOver40 = 0, tsLogged = 0;
+    int64_t sumLate = 0, maxLate = -1000000, minLate = 1000000;
+    uint64_t convTotalUs = 0, convMaxUs = 0, copyTotalUs = 0;
+    uint32_t sink = 0;
     uint64_t start = rdtsc();
+    uint64_t idleSince = 0;
 
     for (;;) {
         uint64_t nowMs = usFrom(rdtsc() - start) / 1000;
-        if (nowMs > 9000) break;
-        if ((int)(nowMs / 1000) >= nextPrint) {
-            int32_t active = ((FnIsActive)sceAvPlayerIsActive)(h);
-            snprintf(b, sizeof b, "t=%llu ms: ativo=%d quadros_reais=%d audio_real=%d", (unsigned long long)nowMs,
-                     (int)active, vTrue, aTrue);
-            out(b);
-            ++nextPrint;
+        if (nowMs > 14000) {
+            out("tempo limite (14 s) atingido");
+            break;
+        }
+        bool audioDone = __atomic_load_n(&g_audioDone, __ATOMIC_SEQ_CST) != 0;
+
+        if (!havePending) {
+            memset(fi, 0, sizeof fi);
+            int32_t ret = ((FnGetFrame)sceAvPlayerGetVideoData)(g_av, fi);
+            if ((ret & 0xFF) != 0) {
+                uint64_t ptr = 0, ts = 0;
+                uint32_t w = 0, hh = 0;
+                memcpy(&ptr, fi, 8);
+                memcpy(&ts, fi + 16, 8);
+                memcpy(&w, fi + 24, 4);
+                memcpy(&hh, fi + 28, 4);
+                const uint8_t* p = (const uint8_t*)(uintptr_t)ptr;
+                bool inPool = g_tex.base && p >= g_tex.base && p < g_tex.base + g_tex.size;
+                if (inPool && w > 0 && hh > 0 && w <= kMaxW && hh <= kMaxH) {
+                    havePending = true;
+                    pPtr = ptr;
+                    pTs = ts;
+                    pW = w;
+                    pH = hh;
+                    idleSince = 0;
+                }
+            }
         }
 
-        memset(fi, 0, sizeof fi);
-        int32_t ret = ((FnGetFrame)sceAvPlayerGetVideoData)(h, fi);
-        if ((ret & 0xFF) != 0) {
-            uint64_t ptr = 0, ts = 0;
-            uint32_t w = 0, hh = 0;
-            memcpy(&ptr, fi, 8);
-            memcpy(&ts, fi + 16, 8);
-            memcpy(&w, fi + 24, 4);
-            memcpy(&hh, fi + 28, 4);
-            const uint8_t* p = (const uint8_t*)(uintptr_t)ptr;
-            bool inPool = g_tex.base && p >= g_tex.base && p < g_tex.base + g_tex.size;
-            if (inPool && w > 0 && hh > 0 && w <= kMaxW && hh <= kMaxH) {
-                ++vTrue;
-                if (vTrue == 1) firstTs = ts;
-                lastTs = ts;
-                if (tsLogged < 12) {
+        if (havePending) {
+            uint64_t am = __atomic_load_n(&g_audioMs, __ATOMIC_SEQ_CST);
+            if (pTs <= am + 10 || audioDone) {
+                const uint8_t* p = (const uint8_t*)(uintptr_t)pPtr;
+                size_t ysize = (size_t)pW * pH;
+                uint64_t t0 = rdtsc();
+                memcpy(g_copy, p, ysize * 3 / 2);
+                uint64_t t1 = rdtsc();
+                nv12ToRgba(g_copy, g_copy + ysize, (int)pW, (int)pH, g_rgba);
+                uint64_t t2 = rdtsc();
+                // Le o resultado FORA do cronometro, para o compilador nao poder remover a conversao.
+                const uint32_t* q = (const uint32_t*)g_rgba;
+                uint32_t cs = 0;
+                for (size_t k = 0; k < ysize; ++k) cs ^= q[k] + (uint32_t)k;
+                sink ^= cs;
+
+                copyTotalUs += usFrom(t1 - t0);
+                uint64_t cu = usFrom(t2 - t1);
+                convTotalUs += cu;
+                if (cu > convMaxUs) convMaxUs = cu;
+
+                int64_t late = (int64_t)am - (int64_t)pTs;
+                sumLate += late;
+                if (late > maxLate) maxLate = late;
+                if (late < minLate) minLate = late;
+                if (late > 40) ++lateOver40;
+                if (presented > 0 && pTs > lastTs + 50) {
+                    ++gaps;
+                    if (gaps <= 5) {
+                        char gb[160];
+                        size_t n = putS(gb, 0, "lacuna: ts anterior=");
+                        n = putD(gb, n, lastTs);
+                        n = putS(gb, n, " ts atual=");
+                        n = putD(gb, n, pTs);
+                        gb[n++] = '\n';
+                        rawWrite(gb, n);
+                    }
+                }
+                lastTs = pTs;
+                ++presented;
+                if (tsLogged < 12 || presented % 30 == 0) {
                     ++tsLogged;
-                    snprintf(b, sizeof b, "quadro %d: ts=%llu ms, tempo_real=%llu ms, %ux%u, ptr=%p", vTrue,
-                             (unsigned long long)ts, (unsigned long long)nowMs, (unsigned)w, (unsigned)hh,
-                             (const void*)p);
+                    snprintf(b, sizeof b, "quadro %d: ts=%llu ms, audio=%llu ms, atraso=%lld ms, tempo_real=%llu ms, conv=%llu us",
+                             presented, (unsigned long long)pTs, (unsigned long long)am, (long long)late,
+                             (unsigned long long)nowMs, (unsigned long long)cu);
                     out(b);
                 }
-                size_t ysize = (size_t)w * hh;
-                if (convN < 30) {
-                    uint64_t t0 = rdtsc();
-                    memcpy(g_copy, p, ysize * 3 / 2);
-                    uint64_t t1 = rdtsc();
-                    nv12ToRgba(g_copy, g_copy + ysize, (int)w, (int)hh, g_rgba);
-                    uint64_t t2 = rdtsc();
-                    copyUs += usFrom(t1 - t0);
-                    uint64_t cu = usFrom(t2 - t1);
-                    convUs += cu;
-                    if (cu > convMaxUs) convMaxUs = cu;
-                    ++convN;
-                }
-                size_t room = (size_t)((g_tex.base + g_tex.size) - p);
-                size_t dumpLen = room < 1600000u ? room : 1600000u;
-                if (!dumpedA && ts >= 1000) {
-                    dumpedA = true;
-                    out("despejando frame_a.raw...");
-                    dumpFile("/data/purpleflix/frame_a.raw", p, dumpLen);
-                    snprintf(b, sizeof b, "frame_a.raw gravado (ts=%llu ms, %llu bytes)", (unsigned long long)ts,
-                             (unsigned long long)dumpLen);
-                    out(b);
-                } else if (!dumpedB && ts >= 3000) {
-                    dumpedB = true;
-                    out("despejando frame_b.raw...");
-                    dumpFile("/data/purpleflix/frame_b.raw", p, dumpLen);
-                    snprintf(b, sizeof b, "frame_b.raw gravado (ts=%llu ms, %llu bytes)", (unsigned long long)ts,
-                             (unsigned long long)dumpLen);
-                    out(b);
-                }
+                havePending = false;
             }
+        } else if (audioDone) {
+            if (idleSince == 0) idleSince = nowMs;
+            if (nowMs - idleSince > 1500) break;
         }
-
-        memset(ai, 0, sizeof ai);
-        int32_t ag = ((FnGetFrame)sceAvPlayerGetAudioData)(h, ai);
-        if ((ag & 0xFF) != 0) {
-            ++aTrue;
-            if (aDumps < 2) {
-                ++aDumps;
-                snprintf(b, sizeof b, "audio: retorno=0x%08X", (unsigned)ag);
-                out(b);
-                dumpWords("audio", ai, 12);
-            }
-        }
-        sceKernelUsleep(5000);
+        sceKernelUsleep(1000);
     }
 
-    uint64_t totalMs = usFrom(rdtsc() - start) / 1000;
-    snprintf(b, sizeof b, "RESULTADO: %d quadros de video REAIS em %llu ms; ts primeiro=%llu ultimo=%llu", vTrue,
-             (unsigned long long)totalMs, (unsigned long long)firstTs, (unsigned long long)lastTs);
-    out(b);
-    if (convN > 0) {
-        snprintf(b, sizeof b, "custo por quadro (%d medidos): copia=%llu us, conversao NV12->RGBA media=%llu us, maxima=%llu us",
-                 convN, (unsigned long long)(copyUs / convN), (unsigned long long)(convUs / convN),
-                 (unsigned long long)convMaxUs);
+    uint64_t wallMs = usFrom(rdtsc() - start) / 1000;
+    __atomic_store_n(&g_stop, 1, __ATOMIC_SEQ_CST);
+    if (haveThread) scePthreadJoin(thr, nullptr);
+
+    out("---- RESUMO ----");
+    logDec("quadros apresentados (esperado ~177)", (uint64_t)presented);
+    logDec("lacunas > 50 ms entre quadros", (uint64_t)gaps);
+    logDec("tempo real total do video (ms)", wallMs);
+    logDec("audio: pedacos enviados (esperado ~281)", (uint64_t)__atomic_load_n(&g_audioChunks, __ATOMIC_SEQ_CST));
+    logDec("audio: tempo real da thread (ms, esperado ~6000 se bloqueia em tempo real)",
+           __atomic_load_n(&g_audioWallMs, __ATOMIC_SEQ_CST));
+    logDec("audio falhou ao abrir (1=sim)", (uint64_t)__atomic_load_n(&g_audioFailed, __ATOMIC_SEQ_CST));
+    if (presented > 0) {
+        logDec("conversao NV12->RGBA media (us)", convTotalUs / (uint64_t)presented);
+        logDec("conversao NV12->RGBA maxima (us)", convMaxUs);
+        logDec("copia media (us)", copyTotalUs / (uint64_t)presented);
+        snprintf(b, sizeof b, "atraso do video vs audio: minimo=%lld ms, medio=%lld ms, maximo=%lld ms, acima de 40 ms em %d quadros",
+                 (long long)minLate, (long long)(sumLate / presented), (long long)maxLate, lateOver40);
         out(b);
     }
-    snprintf(b, sizeof b, "audio: %d chamadas com amostra real", aTrue);
-    out(b);
+    logHex("soma de verificacao (evita remover a conversao)", sink);
 
-    ((FnStop)sceAvPlayerStop)(h);
-    ((FnClose)sceAvPlayerClose)(h);
+    ((FnStop)sceAvPlayerStop)(g_av);
+    ((FnClose)sceAvPlayerClose)(g_av);
     out("fim.");
     return 0;
 }
