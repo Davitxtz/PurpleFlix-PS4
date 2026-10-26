@@ -1,7 +1,7 @@
-// PurpleFlix Probe v3: teste do AvPlayer do sistema.
+// PurpleFlix Probe v4: teste do AvPlayer do sistema.
 // ATENCAO: a estrutura de inicializacao abaixo NAO foi verificada no PS4.
 // Layout baseado na documentacao da comunidade (Vita), ajustado para 64 bits.
-// Callbacks de memoria SEM funcoes da libc (podem ser chamados por threads do sistema).
+// Callbacks de memoria SEM funcoes da libc.
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,7 +19,8 @@ extern "C" int32_t pf_load_module(uint16_t id) __asm__("sceSysmoduleLoadModule")
 namespace {
 
 const char* const kDir = "/data/purpleflix";
-const char* const kFile = "/data/purpleflix/teste.mp4";
+const char* const kFileApp = "/app0/media/teste.mp4";
+const char* const kFileData = "/data/purpleflix/teste.mp4";
 int32_t g_fd = -1;
 
 constexpr size_t kPoolSize = 24u << 20;
@@ -180,8 +181,11 @@ struct InitData {
 typedef int32_t (*FnInit)(void*);
 typedef int32_t (*FnAddSource)(int32_t, const char*);
 typedef int32_t (*FnStart)(int32_t);
+typedef int32_t (*FnStop)(int32_t);
 typedef int32_t (*FnIsActive)(int32_t);
 typedef int32_t (*FnStreamCount)(int32_t);
+typedef int32_t (*FnGetStreamInfo)(int32_t, uint32_t, void*);
+typedef int32_t (*FnEnableStream)(int32_t, uint32_t);
 typedef int32_t (*FnGetVideo)(int32_t, void*);
 typedef int32_t (*FnClose)(int32_t);
 
@@ -191,17 +195,26 @@ int main() {
     mkdir(kDir, 0777);
     g_fd = sceKernelOpen("/data/purpleflix/video_probe.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     mark("00_main");
-    out("PurpleFlix Probe v3 - teste do AvPlayer (estrutura NAO verificada no PS4)");
+    out("PurpleFlix Probe v4 - teste do AvPlayer (estrutura NAO verificada no PS4)");
 
-    char b[240];
+    char b[260];
     snprintf(b, sizeof b, "thread principal=0x%llx", (unsigned long long)(uintptr_t)scePthreadSelf());
     out(b);
 
+    // Escolhe o arquivo: dentro do pacote primeiro, depois em /data.
+    const char* file = kFileApp;
     struct stat st;
-    bool haveFile = (stat(kFile, &st) == 0);
-    snprintf(b, sizeof b, "arquivo de teste %s: %s (%ld bytes)", kFile, haveFile ? "encontrado" : "AUSENTE",
-             haveFile ? (long)st.st_size : 0L);
+    bool haveFile = (stat(kFileApp, &st) == 0);
+    if (!haveFile) {
+        file = kFileData;
+        haveFile = (stat(kFileData, &st) == 0);
+    }
+    snprintf(b, sizeof b, "arquivo de teste: %s (%s), %ld bytes", haveFile ? file : "NENHUM",
+             haveFile ? "encontrado" : "AUSENTE", haveFile ? (long)st.st_size : 0L);
     out(b);
+    if (haveFile && st.st_size < 100000) {
+        out("AVISO: arquivo muito pequeno (< 100 KB). O video de teste correto tem mais de 600 KB.");
+    }
 
     mark("01_antes_modulo");
     int32_t r = pf_load_module(ORBIS_SYSMODULE_AV_PLAYER);
@@ -226,8 +239,6 @@ int main() {
     d.numFrameBuffers = 4;
     d.autoStart = 0;
     d.lang = "eng";
-    snprintf(b, sizeof b, "sizeof(InitData) = %u", (unsigned)sizeof(InitData));
-    out(b);
 
     mark("03_antes_init");
     out("chamando sceAvPlayerInit...");
@@ -244,7 +255,7 @@ int main() {
     out("Init OK: o AvPlayer do sistema inicializou em homebrew.");
 
     if (!haveFile) {
-        out("Sem teste.mp4: parando aqui.");
+        out("Sem arquivo de teste: parando aqui.");
         ((FnClose)sceAvPlayerClose)(h);
         mark("98_fim_sem_arquivo");
         return 0;
@@ -252,16 +263,39 @@ int main() {
 
     mark("05_antes_addsource");
     out("chamando sceAvPlayerAddSource...");
-    int32_t rs = ((FnAddSource)sceAvPlayerAddSource)(h, kFile);
+    int32_t rs = ((FnAddSource)sceAvPlayerAddSource)(h, file);
     mark("06_depois_addsource");
     snprintf(b, sizeof b, "sceAvPlayerAddSource = 0x%08X", (unsigned)rs);
     out(b);
 
-    mark("07_antes_streamcount");
-    int32_t sc = ((FnStreamCount)sceAvPlayerStreamCount)(h);
-    mark("08_depois_streamcount");
-    snprintf(b, sizeof b, "sceAvPlayerStreamCount = %d", (int)sc);
+    // O AddSource pode voltar antes de o player terminar de ler o arquivo: espera as trilhas.
+    mark("07_antes_espera_trilhas");
+    int32_t sc = 0;
+    int waited = 0;
+    for (int i = 0; i < 50; ++i) {
+        sc = ((FnStreamCount)sceAvPlayerStreamCount)(h);
+        if (sc > 0) break;
+        sceKernelUsleep(100000);
+        ++waited;
+    }
+    mark("08_depois_espera_trilhas");
+    snprintf(b, sizeof b, "StreamCount = %d (apos esperar %d ms)", (int)sc, waited * 100);
     out(b);
+    if (sc <= 0) out("O player nao reconheceu nenhuma trilha: arquivo invalido ou formato nao suportado.");
+
+    for (int i = 0; i < sc && i < 4; ++i) {
+        alignas(16) uint8_t info[256];
+        memset(info, 0, sizeof info);
+        int32_t ri = ((FnGetStreamInfo)sceAvPlayerGetStreamInfo)(h, (uint32_t)i, info);
+        uint32_t type = 0;
+        memcpy(&type, info, 4);
+        snprintf(b, sizeof b, "trilha %d: GetStreamInfo=0x%08X tipo=%u (0=video 1=audio 2=texto)", i,
+                 (unsigned)ri, (unsigned)type);
+        out(b);
+        int32_t re = ((FnEnableStream)sceAvPlayerEnableStream)(h, (uint32_t)i);
+        snprintf(b, sizeof b, "trilha %d: EnableStream=0x%08X", i, (unsigned)re);
+        out(b);
+    }
 
     mark("09_antes_start");
     out("chamando sceAvPlayerStart...");
@@ -272,23 +306,24 @@ int main() {
 
     alignas(16) uint8_t fi[256];
     int frames = 0;
-    for (int i = 0; i < 60; ++i) {
+    for (int i = 0; i < 100; ++i) {
         memset(fi, 0, sizeof fi);
         int32_t active = ((FnIsActive)sceAvPlayerIsActive)(h);
         int32_t got = ((FnGetVideo)sceAvPlayerGetVideoData)(h, fi);
         if (got) {
-            uint64_t ptr = 0, ts = 0;
-            uint32_t w = 0, hh = 0;
-            float asp = 0;
-            memcpy(&ptr, fi, 8);
-            memcpy(&ts, fi + 16, 8);
-            memcpy(&w, fi + 24, 4);
-            memcpy(&hh, fi + 28, 4);
-            memcpy(&asp, fi + 32, 4);
-            snprintf(b, sizeof b, "tentativa %d: ativo=%d quadro=SIM ptr=0x%llx ts=%llu largura=%u altura=%u", i,
-                     (int)active, (unsigned long long)ptr, (unsigned long long)ts, (unsigned)w, (unsigned)hh);
-            out(b);
             ++frames;
+            if (frames <= 10 || frames % 10 == 0) {
+                uint64_t ptr = 0, ts = 0;
+                uint32_t w = 0, hh = 0;
+                memcpy(&ptr, fi, 8);
+                memcpy(&ts, fi + 16, 8);
+                memcpy(&w, fi + 24, 4);
+                memcpy(&hh, fi + 28, 4);
+                snprintf(b, sizeof b, "tentativa %d: ativo=%d quadro=SIM ptr=0x%llx ts=%llu largura=%u altura=%u",
+                         i, (int)active, (unsigned long long)ptr, (unsigned long long)ts, (unsigned)w,
+                         (unsigned)hh);
+                out(b);
+            }
         } else if (i % 10 == 0) {
             snprintf(b, sizeof b, "tentativa %d: ativo=%d quadro=nao", i, (int)active);
             out(b);
@@ -299,7 +334,10 @@ int main() {
     snprintf(b, sizeof b, "RESULTADO: %d tentativas com quadro de video", frames);
     out(b);
 
+    ((FnStop)sceAvPlayerStop)(h);
     ((FnClose)sceAvPlayerClose)(h);
     mark("12_fim");
     return 0;
 }
+
+// FIM DO ARQUIVO (probe/main.cpp)
