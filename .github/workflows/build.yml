@@ -87,9 +87,17 @@ jobs:
             bash -c '/workspace/tc/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core pkg_build pkg.gp4 .'
           ls -l ./*.pkg
 
-      - name: Compilar o PurpleFlix Probe e gerar pkg.gp4
+      - name: Compilar o PurpleFlix Probe (com vídeo de teste) e gerar pkg.gp4
         run: |
           set -e
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          mkdir -p media
+          ffmpeg -y -hide_banner -loglevel error \
+            -f lavfi -i "testsrc2=size=1280x720:rate=30" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+            -t 6 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
+            -c:a aac -b:a 128k -ac 2 -movflags +faststart media/teste.mp4
+          ls -l media
           rm -f eboot.bin pkg.gp4 sce_sys/param.sfo
           make INTDIR=build-probe SRCDIR=probe PROJ=probe \
             TITLE='PurpleFlix Probe' VERSION=01.00 TITLE_ID=PFLX00003 \
@@ -118,18 +126,3 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
-      - name: Exportar referências de memória (kernel)
-        run: |
-          TC="$OO_PS4_TOOLCHAIN"
-          OUT="$GITHUB_WORKSPACE/refs-kernel"
-          mkdir -p "$OUT"
-          cd "$TC/include/orbis"
-          find . -type f -iname '*kernel*' -exec cp --parents {} "$OUT/" \;
-          cd "$GITHUB_WORKSPACE"
-          find refs-kernel -type f | head -40
-
-      - name: Enviar referências de memória
-        uses: actions/upload-artifact@v4
-        with:
-          name: referencias-kernel
-          path: refs-kernel/
