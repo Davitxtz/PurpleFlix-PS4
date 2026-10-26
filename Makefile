@@ -2,7 +2,7 @@
 
 # ---- Identidade do pacote ----
 TITLE      := PurpleFlix by Davitxtz
-VERSION    := 01.12
+VERSION    := 01.13
 TITLE_ID   := PFLX00002
 CONTENT_ID := IV0000-PFLX00002_00-PURPLEFLIX000000
 
@@ -36,7 +36,7 @@ ifeq ($(strip $(OBJS)),)
 $(error Nenhum .cpp encontrado em $(SRCDIR)/)
 endif
 
-LIBMODULES := $(wildcard sce_module/*)
+LIBMODULES := $(wildcard sce_module/*) $(wildcard media/*)
 
 CFLAGS   := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -c \
             -isysroot $(TOOLCHAIN) -isystem $(TOOLCHAIN)/include
