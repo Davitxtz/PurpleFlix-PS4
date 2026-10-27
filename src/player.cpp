@@ -365,7 +365,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
             out(b);
         }
     }
-    SDL_Window* win = SDL_RenderGetWindow(ren);
+    SDL_Window* win = SDL_GetWindowFromID(1);  // a janela do app é a primeira criada (id 1)
     Uint32 wf = win ? SDL_GetWindowPixelFormat(win) : SDL_PIXELFORMAT_UNKNOWN;
     {
         char b[160];
