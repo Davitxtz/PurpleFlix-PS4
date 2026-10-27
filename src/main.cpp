@@ -15,6 +15,7 @@
 #include "netdiag.hpp"
 #include "tmdb.hpp"
 #include "poster.hpp"
+#include "player.hpp"
 
 using namespace gfx;
 
@@ -69,6 +70,7 @@ int g_count[2] = {kExamples, kExamples};  // 0 = filmes, 1 = séries
 int g_pageLoaded[2] = {0, 0};
 bool g_more[2] = {false, false};
 int g_pendingMore = -1;
+int g_playId = -1;
 
 const char* const kGenres[7] = {"Ação", "Drama", "Comédia", "Ficção", "Terror", "Aventura", "Animação"};
 const char* const kSynopsis =
@@ -463,9 +465,8 @@ void handleInput(App& a, uint32_t trig, uint32_t now) {
         if (trig & pad::kRight) a.detailBtn = 1;
         if (trig & pad::kCircle) a.detailId = -1;
         if (trig & pad::kCross) {
-            if (a.detailBtn == 0) {
-                toast(a, "Reprodução de vídeo ainda não implementada.",
-                      "Será desenvolvida em uma etapa futura.", now);
+                        if (a.detailBtn == 0) {
+                g_playId = a.detailId;
             } else {
                 a.detailId = -1;
             }
@@ -715,7 +716,7 @@ void drawDetail(const App& a) {
         frame(bx, by, 300, 80, f ? 4 : 2, f ? C_BRIGHT : C_DEEP);
         textCentered(bx + 150, by + 26, labels[i], 4, C_TEXT);
     }
-    text(600, 710, "Reprodução de vídeo: ainda não implementada.", 3, C_WARN);
+     text(600, 710, "Assistir toca um vídeo de teste (a fonte real vem depois).", 3, C_WARN);
 }
 
 void drawFooter(const App& a, uint32_t now) {
@@ -860,6 +861,25 @@ int main(int, char**) {
         SDL_RenderPresent(ren);
         netdiag::runPending();
         poster::loadOne();
+                if (g_playId >= 0) {
+            int pid = g_playId;
+            g_playId = -1;
+            const char* vp = "/app0/teste.mp4";
+            struct stat vst;
+            if (stat(vp, &vst) != 0) vp = "/data/purpleflix/teste.mp4";
+            char perr[160];
+            perr[0] = 0;
+            MARK("20_antes_player");
+            bool pok = player::run(ren, vp, g_titles[pid].name, perr, sizeof perr);
+            MARK("21_depois_player");
+            in.held = pad::poll();
+            in.prev = in.held;
+            in.trig = 0;
+            if (!pok) {
+                toast(app, "Não foi possível reproduzir o vídeo.", perr[0] ? perr : "Erro desconhecido.",
+                      SDL_GetTicks());
+            }
+                }
 
         // Carrega o catálogo online UMA vez, depois do primeiro quadro do menu.
         if (!splash && menuMarked && !g_catalogTried && !netdiag::active()) {
