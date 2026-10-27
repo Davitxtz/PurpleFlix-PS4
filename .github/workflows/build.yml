@@ -40,13 +40,13 @@ jobs:
           mkdir -p sce_sys
           python3 tools/make_icon.py sce_sys/icon0.png
 
-      - name: Gerar vídeo de teste (ffmpeg)
+      - name: Gerar vídeo de teste de 30 s (ffmpeg)
         run: |
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          command -v ffmpeg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -y -hide_banner -loglevel error \
             -f lavfi -i "testsrc2=size=1280x720:rate=30" \
             -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-            -t 6 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
+            -t 30 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
             -c:a aac -b:a 128k -ac 2 -movflags +faststart teste.mp4
           ls -l teste.mp4
 
