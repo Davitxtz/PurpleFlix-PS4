@@ -121,6 +121,19 @@ void logDec(const char* label, uint64_t v) {
     rawWrite(b, n);
 }
 
+void logSigned(const char* label, int64_t v) {
+    char b[200];
+    size_t n = putS(b, 0, label);
+    n = putS(b, n, " = ");
+    if (v < 0) {
+        b[n++] = '-';
+        v = -v;
+    }
+    n = putD(b, n, (uint64_t)v);
+    b[n++] = '\n';
+    rawWrite(b, n);
+}
+
 void* bump(uint8_t* base, size_t total, size_t* offp, uint32_t align, uint32_t size) {
     size_t a = align < 64 ? 64 : align;
     size_t cur = __atomic_load_n(offp, __ATOMIC_SEQ_CST);
@@ -177,8 +190,10 @@ bool ensureBlocks() {
 
 inline uint8_t clamp8(int v) { return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
-// NV12 -> RGBA (bytes R,G,B,A). Plano Y seguido de UV intercalado (confirmado no PS4, 720p).
-void nv12ToRgba(const uint8_t* y, const uint8_t* uv, int w, int h, uint8_t* dst) {
+// NV12 -> pixels de 32 bits. BGRA=false: bytes R,G,B,A (ABGR8888). BGRA=true: bytes B,G,R,A (ARGB8888).
+// Plano Y seguido de UV intercalado (confirmado no PS4, 720p).
+template <bool BGRA>
+void nv12Convert(const uint8_t* y, const uint8_t* uv, int w, int h, uint8_t* dst) {
     for (int j = 0; j < h; ++j) {
         const uint8_t* yr = y + (size_t)j * w;
         const uint8_t* uvr = uv + (size_t)(j >> 1) * w;
@@ -191,14 +206,15 @@ void nv12ToRgba(const uint8_t* y, const uint8_t* uv, int w, int h, uint8_t* dst)
             int bu = 516 * U + 128;
             int c0 = 298 * ((int)yr[i] - 16);
             int c1 = 298 * ((int)yr[i + 1] - 16);
-            d[4 * i + 0] = clamp8((c0 + rv) >> 8);
-            d[4 * i + 1] = clamp8((c0 + guv) >> 8);
-            d[4 * i + 2] = clamp8((c0 + bu) >> 8);
-            d[4 * i + 3] = 255;
-            d[4 * i + 4] = clamp8((c1 + rv) >> 8);
-            d[4 * i + 5] = clamp8((c1 + guv) >> 8);
-            d[4 * i + 6] = clamp8((c1 + bu) >> 8);
-            d[4 * i + 7] = 255;
+            uint8_t r0 = clamp8((c0 + rv) >> 8), g0 = clamp8((c0 + guv) >> 8), b0 = clamp8((c0 + bu) >> 8);
+            uint8_t r1 = clamp8((c1 + rv) >> 8), g1 = clamp8((c1 + guv) >> 8), b1 = clamp8((c1 + bu) >> 8);
+            if (BGRA) {
+                d[4 * i + 0] = b0; d[4 * i + 1] = g0; d[4 * i + 2] = r0; d[4 * i + 3] = 255;
+                d[4 * i + 4] = b1; d[4 * i + 5] = g1; d[4 * i + 6] = r1; d[4 * i + 7] = 255;
+            } else {
+                d[4 * i + 0] = r0; d[4 * i + 1] = g0; d[4 * i + 2] = b0; d[4 * i + 3] = 255;
+                d[4 * i + 4] = r1; d[4 * i + 5] = g1; d[4 * i + 6] = b1; d[4 * i + 7] = 255;
+            }
         }
     }
 }
@@ -299,16 +315,78 @@ void* audioThread(void*) {
     return nullptr;
 }
 
+// Acumuladores por modo (0 = esticado, 1 = nativo), em microssegundos.
+struct Acc {
+    uint64_t n, conv, clr, upd, copy, ovl, pres;
+};
+
+void logAcc(const char* name, const Acc& a) {
+    char b[160];
+    size_t n = putS(b, 0, "modo ");
+    n = putS(b, n, name);
+    n = putS(b, n, ": quadros medidos=");
+    n = putD(b, n, a.n);
+    b[n++] = '\n';
+    rawWrite(b, n);
+    if (a.n == 0) return;
+    char l[80];
+    size_t m = putS(l, 0, "  media conv (us)");
+    logDec(l, a.conv / a.n);
+    (void)m;
+    logDec("  media limpar (us)", a.clr / a.n);
+    logDec("  media atualizar textura (us)", a.upd / a.n);
+    logDec("  media copiar/esticar (us)", a.copy / a.n);
+    logDec("  media barra/estatisticas (us)", a.ovl / a.n);
+    logDec("  media apresentar tela (us)", a.pres / a.n);
+}
+
 }  // namespace
 
 bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* err, size_t errCap) {
     if (err && errCap) err[0] = 0;
     g_tscFreq = sceKernelGetTscFrequency();
     g_fd = sceKernelOpen(kLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    out("PurpleFlix player");
+    out("PurpleFlix player v2 (medicao por etapa)");
     out(path);
 
     if (!ensureBlocks()) return failMsg(err, errCap, "Memória de vídeo indisponível.");
+
+    // Informacoes do renderizador e da janela (para escolher o formato de pixel certo).
+    SDL_RendererInfo ri;
+    memset(&ri, 0, sizeof ri);
+    SDL_GetRendererInfo(ren, &ri);
+    {
+        char b[200];
+        snprintf(b, sizeof b, "renderizador: %s, flags=0x%x, formatos de textura=%d", ri.name ? ri.name : "?",
+                 (unsigned)ri.flags, (int)ri.num_texture_formats);
+        out(b);
+        for (Uint32 i = 0; i < ri.num_texture_formats && i < 8; ++i) {
+            snprintf(b, sizeof b, "  formato %u: %s", (unsigned)i, SDL_GetPixelFormatName(ri.texture_formats[i]));
+            out(b);
+        }
+    }
+    SDL_Window* win = SDL_RenderGetWindow(ren);
+    Uint32 wf = win ? SDL_GetWindowPixelFormat(win) : SDL_PIXELFORMAT_UNKNOWN;
+    {
+        char b[160];
+        snprintf(b, sizeof b, "formato de pixel da janela: %s", SDL_GetPixelFormatName(wf));
+        out(b);
+    }
+    Uint32 texFmt = SDL_PIXELFORMAT_ABGR8888;
+    bool bgra = false;
+    if (wf == SDL_PIXELFORMAT_ARGB8888 || wf == SDL_PIXELFORMAT_RGB888) {
+        texFmt = wf;
+        bgra = true;
+    } else if (wf == SDL_PIXELFORMAT_ABGR8888 || wf == SDL_PIXELFORMAT_BGR888) {
+        texFmt = wf;
+        bgra = false;
+    }
+    {
+        char b[160];
+        snprintf(b, sizeof b, "formato da textura de video: %s (ordem dos bytes: %s)", SDL_GetPixelFormatName(texFmt),
+                 bgra ? "B,G,R,A" : "R,G,B,A");
+        out(b);
+    }
 
     // Nova sessao: reinicia os alocadores e o estado compartilhado.
     g_poolOff = 0;
@@ -377,7 +455,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         return failMsg(err, errCap, "Resolução de vídeo não suportada (máximo 1920x1088).");
     }
 
-    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, (int)vw, (int)vh);
+    SDL_Texture* tex = SDL_CreateTexture(ren, texFmt, SDL_TEXTUREACCESS_STREAMING, (int)vw, (int)vh);
     if (!tex) {
         closeAv();
         return failMsg(err, errCap, "Não foi possível criar a textura de vídeo.");
@@ -395,16 +473,22 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     bool haveThread = (rt == 0);
     if (!haveThread) g_audioDone = 1;
 
-    // Destino do video na tela (mantem a proporcao).
-    int dw, dh;
-    if ((long)vw * H >= (long)vh * W) {
-        dw = W;
-        dh = (int)((long)vh * W / (long)vw);
-    } else {
-        dh = H;
-        dw = (int)((long)vw * H / (long)vh);
+    // Destinos do video: 0 = esticado (mantem a proporcao), 1 = nativo centralizado.
+    SDL_Rect dstMode[2];
+    {
+        int dw, dh;
+        if ((long)vw * H >= (long)vh * W) {
+            dw = W;
+            dh = (int)((long)vh * W / (long)vw);
+        } else {
+            dh = H;
+            dw = (int)((long)vw * H / (long)vh);
+        }
+        dstMode[0] = {(W - dw) / 2, (H - dh) / 2, dw, dh};
+        dstMode[1] = {((int)W - (int)vw) / 2, ((int)H - (int)vh) / 2, (int)vw, (int)vh};
     }
-    SDL_Rect dst = {(W - dw) / 2, (H - dh) / 2, dw, dh};
+    int mode = 0;
+    const char* const modeName[2] = {"esticado", "nativo"};
 
     const Color kBar = {0, 0, 0, 170};
     const Color kText = {238, 230, 252, 255};
@@ -421,8 +505,10 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     uint64_t endIdleSince = 0;
 
     int presented = 0, drops = 0;
-    uint64_t convTotalUs = 0, convMaxUs = 0, frameTotalUs = 0, frameMaxUs = 0, lastConvUs = 0, lastFrameUs = 0;
+    uint64_t lastConvUs = 0, lastClr = 0, lastUpd = 0, lastCopy = 0, lastOvl = 0, lastPres = 0;
     int64_t sumLate = 0;
+    int lateN = 0;
+    Acc acc[2] = {{0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0, 0}};
     int fps = 0, fpsCount = 0;
     uint64_t fpsStartMs = 0;
     bool overlayShownLast = true;
@@ -443,6 +529,10 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         }
         if (press & pad::kTriangle) {
             showStats = !showStats;
+            dirty = true;
+        }
+        if (press & pad::kSquare) {
+            mode = 1 - mode;
             dirty = true;
         }
         SDL_Event ev;
@@ -484,12 +574,13 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
                     size_t ysize = (size_t)vw * vh;
                     uint64_t t0 = rdtsc();
                     memcpy(g_copy, p, ysize * 3 / 2);
-                    nv12ToRgba(g_copy, g_copy + ysize, (int)vw, (int)vh, g_rgba);
-                    uint64_t cu = usFrom(rdtsc() - t0);
-                    lastConvUs = cu;
-                    convTotalUs += cu;
-                    if (cu > convMaxUs) convMaxUs = cu;
-                    sumLate += (int64_t)clockMs - (int64_t)pTs;
+                    if (bgra) nv12Convert<true>(g_copy, g_copy + ysize, (int)vw, (int)vh, g_rgba);
+                    else nv12Convert<false>(g_copy, g_copy + ysize, (int)vw, (int)vh, g_rgba);
+                    lastConvUs = usFrom(rdtsc() - t0);
+                    if (!audioDone) {
+                        sumLate += (int64_t)clockMs - (int64_t)pTs;
+                        ++lateN;
+                    }
                     lastTs = pTs;
                     ++presented;
                     ++fpsCount;
@@ -520,13 +611,19 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
 
         if (dirty) {
             dirty = false;
-            uint64_t r0 = rdtsc();
-            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-            SDL_RenderClear(ren);
-            if (presented > 0) {
-                SDL_UpdateTexture(tex, nullptr, g_rgba, (int)vw * 4);
-                SDL_RenderCopy(ren, tex, nullptr, &dst);
+            const SDL_Rect& dst = dstMode[mode];
+            bool needClear = !(dst.w == W && dst.h == H);
+
+            uint64_t a0 = rdtsc();
+            if (needClear) {
+                SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+                SDL_RenderClear(ren);
             }
+            uint64_t a1 = rdtsc();
+            if (presented > 0) SDL_UpdateTexture(tex, nullptr, g_rgba, (int)vw * 4);
+            uint64_t a2 = rdtsc();
+            if (presented > 0) SDL_RenderCopy(ren, tex, nullptr, &dst);
+            uint64_t a3 = rdtsc();
             if (overlayVisible) {
                 gfx::rect(0, 0, W, 90, kBar);
                 gfx::text(60, 28, title ? title : "", 4, kText);
@@ -539,33 +636,59 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
                 unsigned cs = (unsigned)(lastTs / 1000), ds = (unsigned)(durMs / 1000);
                 snprintf(tb, sizeof tb, "%u:%02u / %u:%02u", cs / 60, cs % 60, ds / 60, ds % 60);
                 gfx::text(60, 1004, tb, 3, kText);
-                gfx::text(60, 1040, "X: pausar/continuar    O: voltar    Triângulo: estatísticas", 2, kDim);
+                gfx::text(60, 1040, "X: pausar    O: voltar    Triângulo: estatísticas    Quadrado: modo", 2, kDim);
                 if (paused) gfx::textCentered(W / 2, 480, "PAUSADO", 8, kText);
             }
             if (showStats) {
                 char sb[96];
-                gfx::rect(W - 560, 100, 520, 230, kBar);
-                snprintf(sb, sizeof sb, "quadros por segundo: %d", fps);
-                gfx::text(W - 540, 116, sb, 3, kText);
-                snprintf(sb, sizeof sb, "conversão: %u.%u ms", (unsigned)(lastConvUs / 1000),
-                         (unsigned)((lastConvUs % 1000) / 100));
-                gfx::text(W - 540, 150, sb, 3, kText);
-                snprintf(sb, sizeof sb, "quadro total: %u.%u ms", (unsigned)(lastFrameUs / 1000),
-                         (unsigned)((lastFrameUs % 1000) / 100));
-                gfx::text(W - 540, 184, sb, 3, kText);
+                gfx::rect(W - 600, 100, 560, 420, kBar);
+                int y = 116;
+                snprintf(sb, sizeof sb, "modo: %s   fps: %d", modeName[mode], fps);
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "conversão: %u.%u ms", (unsigned)(lastConvUs / 1000), (unsigned)((lastConvUs % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "limpar: %u.%u ms", (unsigned)(lastClr / 1000), (unsigned)((lastClr % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "textura: %u.%u ms", (unsigned)(lastUpd / 1000), (unsigned)((lastUpd % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "copiar/esticar: %u.%u ms", (unsigned)(lastCopy / 1000), (unsigned)((lastCopy % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "barra: %u.%u ms", (unsigned)(lastOvl / 1000), (unsigned)((lastOvl % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
+                snprintf(sb, sizeof sb, "apresentar: %u.%u ms", (unsigned)(lastPres / 1000), (unsigned)((lastPres % 1000) / 100));
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
                 snprintf(sb, sizeof sb, "descartados: %d", drops);
-                gfx::text(W - 540, 218, sb, 3, kText);
-                snprintf(sb, sizeof sb, "resolução: %ux%u", (unsigned)vw, (unsigned)vh);
-                gfx::text(W - 540, 252, sb, 3, kText);
+                gfx::text(W - 580, y, sb, 3, kText);
+                y += 34;
                 snprintf(sb, sizeof sb, "som: %s", g_audioFailed ? "indisponível" : "ok");
-                gfx::text(W - 540, 286, sb, 3, g_audioFailed ? Color{255, 130, 150, 255} : kText);
+                gfx::text(W - 580, y, sb, 3, g_audioFailed ? Color{255, 130, 150, 255} : kText);
             }
+            uint64_t a4 = rdtsc();
             SDL_RenderPresent(ren);
+            uint64_t a5 = rdtsc();
+
             if (renderedFrame) {
                 renderedFrame = false;
-                lastFrameUs = lastConvUs + usFrom(rdtsc() - r0);
-                frameTotalUs += lastFrameUs;
-                if (lastFrameUs > frameMaxUs) frameMaxUs = lastFrameUs;
+                lastClr = usFrom(a1 - a0);
+                lastUpd = usFrom(a2 - a1);
+                lastCopy = usFrom(a3 - a2);
+                lastOvl = usFrom(a4 - a3);
+                lastPres = usFrom(a5 - a4);
+                Acc& ac = acc[mode];
+                ++ac.n;
+                ac.conv += lastConvUs;
+                ac.clr += lastClr;
+                ac.upd += lastUpd;
+                ac.copy += lastCopy;
+                ac.ovl += lastOvl;
+                ac.pres += lastPres;
             }
         }
         sceKernelUsleep(1000);
@@ -583,13 +706,9 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     logDec("quadros descartados", (uint64_t)drops);
     logDec("audio: pedacos enviados", (uint64_t)__atomic_load_n(&g_audioChunks, __ATOMIC_SEQ_CST));
     logDec("audio falhou (1=sim)", (uint64_t)g_audioFailed);
-    if (presented > 0) {
-        logDec("conversao media (us)", convTotalUs / (uint64_t)presented);
-        logDec("conversao maxima (us)", convMaxUs);
-        logDec("quadro total medio (us): conversao + textura + desenho", frameTotalUs / (uint64_t)presented);
-        logDec("quadro total maximo (us)", frameMaxUs);
-        logDec("atraso medio do video vs som (ms, sinalizado)", (uint64_t)(sumLate / presented));
-    }
+    if (lateN > 0) logSigned("atraso medio do video vs som (ms, so enquanto o som tocava)", sumLate / lateN);
+    logAcc(modeName[0], acc[0]);
+    logAcc(modeName[1], acc[1]);
     out("fim.");
     if (g_fd >= 0) {
         sceKernelClose(g_fd);
