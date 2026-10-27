@@ -315,7 +315,7 @@ void* audioThread(void*) {
     return nullptr;
 }
 
-// Acumuladores por modo (0 = esticado, 1 = nativo), em microssegundos.
+// Acumuladores por modo (0 = esticado, 1 = nativo, 2 = direto), em microssegundos.
 struct Acc {
     uint64_t n, conv, clr, upd, copy, ovl, pres;
 };
@@ -329,15 +329,66 @@ void logAcc(const char* name, const Acc& a) {
     b[n++] = '\n';
     rawWrite(b, n);
     if (a.n == 0) return;
-    char l[80];
-    size_t m = putS(l, 0, "  media conv (us)");
-    logDec(l, a.conv / a.n);
-    (void)m;
+    logDec("  media conversao (us)", a.conv / a.n);
     logDec("  media limpar (us)", a.clr / a.n);
     logDec("  media atualizar textura (us)", a.upd / a.n);
-    logDec("  media copiar/esticar (us)", a.copy / a.n);
+    logDec("  media copiar (us)", a.copy / a.n);
     logDec("  media barra/estatisticas (us)", a.ovl / a.n);
     logDec("  media apresentar tela (us)", a.pres / a.n);
+}
+
+// Mede o custo de apresentar a tela SEM video (separa custo fixo de custo por area).
+void benchPresent(SDL_Renderer* ren, SDL_Window* win) {
+    out("---- micro-benchmark de apresentacao (sem video) ----");
+    const int N = 8;
+    uint64_t t0 = rdtsc();
+    for (int i = 0; i < N; ++i) {
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+        SDL_RenderClear(ren);
+        SDL_RenderPresent(ren);
+    }
+    logDec("B1 limpar + SDL_RenderPresent (us por quadro)", usFrom(rdtsc() - t0) / N);
+
+    SDL_Surface* ws = win ? SDL_GetWindowSurface(win) : nullptr;
+    if (!ws || !ws->pixels) {
+        out("B2-B6: sem superficie da janela");
+        return;
+    }
+    logDec("superficie: largura", (uint64_t)ws->w);
+    logDec("superficie: altura", (uint64_t)ws->h);
+    logDec("superficie: pitch (bytes)", (uint64_t)ws->pitch);
+
+    t0 = rdtsc();
+    for (int i = 0; i < N; ++i) SDL_UpdateWindowSurface(win);
+    logDec("B2 SDL_UpdateWindowSurface janela inteira (us por chamada)", usFrom(rdtsc() - t0) / N);
+
+    if (ws->w >= 1600 && ws->h >= 900) {
+        SDL_Rect r720 = {(ws->w - 1280) / 2, (ws->h - 720) / 2, 1280, 720};
+        t0 = rdtsc();
+        for (int i = 0; i < N; ++i) SDL_UpdateWindowSurfaceRects(win, &r720, 1);
+        logDec("B3 atualizar so retangulo 1280x720 (us por chamada)", usFrom(rdtsc() - t0) / N);
+    }
+    SDL_Rect r64 = {0, 0, 64, 64};
+    t0 = rdtsc();
+    for (int i = 0; i < N; ++i) SDL_UpdateWindowSurfaceRects(win, &r64, 1);
+    logDec("B4 atualizar so retangulo 64x64 (us por chamada)", usFrom(rdtsc() - t0) / N);
+
+    t0 = rdtsc();
+    for (int i = 0; i < N; ++i) SDL_FillRect(ws, nullptr, 0);
+    logDec("B5 preencher a superficie inteira (us, so CPU)", usFrom(rdtsc() - t0) / N);
+
+    if (ws->w >= 1600 && ws->h >= 900) {
+        int x0 = (ws->w - 1280) / 2, y0 = (ws->h - 720) / 2;
+        t0 = rdtsc();
+        for (int i = 0; i < N; ++i) {
+            for (int j = 0; j < 720; ++j) {
+                memcpy((uint8_t*)ws->pixels + (size_t)(y0 + j) * ws->pitch + (size_t)x0 * 4, g_rgba + (size_t)j * 1280 * 4,
+                       1280 * 4);
+            }
+        }
+        logDec("B6 copiar 1280x720 para a superficie (us, so CPU)", usFrom(rdtsc() - t0) / N);
+    }
+    out("---- fim do micro-benchmark ----");
 }
 
 }  // namespace
@@ -346,26 +397,20 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     if (err && errCap) err[0] = 0;
     g_tscFreq = sceKernelGetTscFrequency();
     g_fd = sceKernelOpen(kLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    out("PurpleFlix player v2 (medicao por etapa)");
+    out("PurpleFlix player v3 (benchmark de apresentacao + modo direto)");
     out(path);
 
     if (!ensureBlocks()) return failMsg(err, errCap, "Memória de vídeo indisponível.");
 
-    // Informacoes do renderizador e da janela (para escolher o formato de pixel certo).
     SDL_RendererInfo ri;
     memset(&ri, 0, sizeof ri);
     SDL_GetRendererInfo(ren, &ri);
     {
         char b[200];
-        snprintf(b, sizeof b, "renderizador: %s, flags=0x%x, formatos de textura=%d", ri.name ? ri.name : "?",
-                 (unsigned)ri.flags, (int)ri.num_texture_formats);
+        snprintf(b, sizeof b, "renderizador: %s, flags=0x%x", ri.name ? ri.name : "?", (unsigned)ri.flags);
         out(b);
-        for (Uint32 i = 0; i < ri.num_texture_formats && i < 8; ++i) {
-            snprintf(b, sizeof b, "  formato %u: %s", (unsigned)i, SDL_GetPixelFormatName(ri.texture_formats[i]));
-            out(b);
-        }
     }
-    SDL_Window* win = SDL_GetWindowFromID(1);  // a janela do app é a primeira criada (id 1)
+    SDL_Window* win = SDL_GetWindowFromID(1);  // a janela do app e a primeira criada (confirmado no log)
     Uint32 wf = win ? SDL_GetWindowPixelFormat(win) : SDL_PIXELFORMAT_UNKNOWN;
     {
         char b[160];
@@ -381,12 +426,9 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         texFmt = wf;
         bgra = false;
     }
-    {
-        char b[160];
-        snprintf(b, sizeof b, "formato da textura de video: %s (ordem dos bytes: %s)", SDL_GetPixelFormatName(texFmt),
-                 bgra ? "B,G,R,A" : "R,G,B,A");
-        out(b);
-    }
+
+    // Mede o custo de apresentar antes de tocar (a tela fica preta por ~2 s).
+    benchPresent(ren, win);
 
     // Nova sessao: reinicia os alocadores e o estado compartilhado.
     g_poolOff = 0;
@@ -461,6 +503,13 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         return failMsg(err, errCap, "Não foi possível criar a textura de vídeo.");
     }
 
+    // Modo direto: escreve na superficie da janela e atualiza so o retangulo do video.
+    SDL_Surface* ws = win ? SDL_GetWindowSurface(win) : nullptr;
+    bool directOk = ws && ws->pixels && ws->format && ws->format->BytesPerPixel == 4 && ws->w >= (int)vw &&
+                    ws->h >= (int)vh && ws->w == W && ws->h == H;
+    out(directOk ? "modo direto: disponivel" : "modo direto: INDISPONIVEL");
+    int modeCount = directOk ? 3 : 2;
+
     int32_t rst = ((FnStart)sceAvPlayerStart)(g_av);
     logHex("sceAvPlayerStart", (uint32_t)rst);
 
@@ -473,8 +522,8 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     bool haveThread = (rt == 0);
     if (!haveThread) g_audioDone = 1;
 
-    // Destinos do video: 0 = esticado (mantem a proporcao), 1 = nativo centralizado.
-    SDL_Rect dstMode[2];
+    // Destinos do video: 0 = esticado (mantem a proporcao), 1 e 2 = nativo centralizado.
+    SDL_Rect dstMode[3];
     {
         int dw, dh;
         if ((long)vw * H >= (long)vh * W) {
@@ -486,9 +535,10 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         }
         dstMode[0] = {(W - dw) / 2, (H - dh) / 2, dw, dh};
         dstMode[1] = {((int)W - (int)vw) / 2, ((int)H - (int)vh) / 2, (int)vw, (int)vh};
+        dstMode[2] = dstMode[1];
     }
     int mode = 0;
-    const char* const modeName[2] = {"esticado", "nativo"};
+    const char* const modeName[3] = {"esticado", "nativo", "direto"};
 
     const Color kBar = {0, 0, 0, 170};
     const Color kText = {238, 230, 252, 255};
@@ -508,7 +558,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     uint64_t lastConvUs = 0, lastClr = 0, lastUpd = 0, lastCopy = 0, lastOvl = 0, lastPres = 0;
     int64_t sumLate = 0;
     int lateN = 0;
-    Acc acc[2] = {{0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0, 0}};
+    Acc acc[3] = {};
     int fps = 0, fpsCount = 0;
     uint64_t fpsStartMs = 0;
     bool overlayShownLast = true;
@@ -532,7 +582,14 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
             dirty = true;
         }
         if (press & pad::kSquare) {
-            mode = 1 - mode;
+            mode = (mode + 1) % modeCount;
+            if (mode == 2) {
+                SDL_FillRect(ws, nullptr, SDL_MapRGB(ws->format, 0, 0, 0));
+                SDL_UpdateWindowSurface(win);
+            }
+            char mb[96];
+            snprintf(mb, sizeof mb, "modo mudou para %s em t=%llu ms", modeName[mode], (unsigned long long)nowMs);
+            out(mb);
             dirty = true;
         }
         SDL_Event ev;
@@ -601,15 +658,36 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
             fps = fpsCount;
             fpsCount = 0;
             fpsStartMs = nowMs;
-            if (showStats) dirty = true;
+            if (showStats && mode != 2) dirty = true;
         }
         bool overlayVisible = paused || nowMs < overlayUntilMs;
         if (overlayVisible != overlayShownLast) {
             overlayShownLast = overlayVisible;
-            dirty = true;
+            if (mode != 2) dirty = true;
         }
 
-        if (dirty) {
+        if (dirty && mode == 2) {
+            dirty = false;
+            if (renderedFrame && presented > 0) {
+                renderedFrame = false;
+                const SDL_Rect& vr = dstMode[2];
+                uint64_t a0 = rdtsc();
+                for (int j = 0; j < (int)vh; ++j) {
+                    memcpy((uint8_t*)ws->pixels + (size_t)(vr.y + j) * ws->pitch + (size_t)vr.x * 4,
+                           g_rgba + (size_t)j * vw * 4, (size_t)vw * 4);
+                }
+                uint64_t a1 = rdtsc();
+                SDL_UpdateWindowSurfaceRects(win, &vr, 1);
+                uint64_t a2 = rdtsc();
+                lastCopy = usFrom(a1 - a0);
+                lastPres = usFrom(a2 - a1);
+                Acc& ac = acc[2];
+                ++ac.n;
+                ac.conv += lastConvUs;
+                ac.copy += lastCopy;
+                ac.pres += lastPres;
+            }
+        } else if (dirty) {
             dirty = false;
             const SDL_Rect& dst = dstMode[mode];
             bool needClear = !(dst.w == W && dst.h == H);
@@ -655,7 +733,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
                 snprintf(sb, sizeof sb, "textura: %u.%u ms", (unsigned)(lastUpd / 1000), (unsigned)((lastUpd % 1000) / 100));
                 gfx::text(W - 580, y, sb, 3, kText);
                 y += 34;
-                snprintf(sb, sizeof sb, "copiar/esticar: %u.%u ms", (unsigned)(lastCopy / 1000), (unsigned)((lastCopy % 1000) / 100));
+                snprintf(sb, sizeof sb, "copiar: %u.%u ms", (unsigned)(lastCopy / 1000), (unsigned)((lastCopy % 1000) / 100));
                 gfx::text(W - 580, y, sb, 3, kText);
                 y += 34;
                 snprintf(sb, sizeof sb, "barra: %u.%u ms", (unsigned)(lastOvl / 1000), (unsigned)((lastOvl % 1000) / 100));
@@ -709,6 +787,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
     if (lateN > 0) logSigned("atraso medio do video vs som (ms, so enquanto o som tocava)", sumLate / lateN);
     logAcc(modeName[0], acc[0]);
     logAcc(modeName[1], acc[1]);
+    logAcc(modeName[2], acc[2]);
     out("fim.");
     if (g_fd >= 0) {
         sceKernelClose(g_fd);
