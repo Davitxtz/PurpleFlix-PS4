@@ -6,15 +6,15 @@ namespace cfg {
 constexpr const char* kAppName     = "PurpleFlix";
 constexpr const char* kAppByline   = "by Davitxtz";
 constexpr const char* kAppFullName = "PurpleFlix by Davitxtz";
-constexpr const char* kVersion     = "0.3.0";   // versão exibida no app
+constexpr const char* kVersion     = "0.6.0";   // versão exibida no app
 constexpr const char* kDevName     = "Davitxtz";
 
 // Apresentação do desenvolvedor (uma linha por item, editável).
 constexpr const char* kBioLines[] = {
     "Desenvolvedor de homebrew para PS4.",
     "PurpleFlix é um projeto independente de catálogo",
-    "e reprodução de vídeos de fontes autorizadas?.",
-    "🇧🇷"
+    "e reprodução de vídeos de fontes autorizadas?",
+    "Ω"
 };
 constexpr int kBioLineCount = 4;
 
