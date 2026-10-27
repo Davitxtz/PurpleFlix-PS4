@@ -40,6 +40,16 @@ jobs:
           mkdir -p sce_sys
           python3 tools/make_icon.py sce_sys/icon0.png
 
+      - name: Gerar vídeo de teste (ffmpeg)
+        run: |
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -y -hide_banner -loglevel error \
+            -f lavfi -i "testsrc2=size=1280x720:rate=30" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+            -t 6 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
+            -c:a aac -b:a 128k -ac 2 -movflags +faststart teste.mp4
+          ls -l teste.mp4
+
       - name: Compilar o app principal e gerar pkg.gp4
         run: |
           set -e
@@ -87,17 +97,10 @@ jobs:
             bash -c '/workspace/tc/OpenOrbis/PS4Toolchain/bin/linux/PkgTool.Core pkg_build pkg.gp4 .'
           ls -l ./*.pkg
 
-      - name: Compilar o PurpleFlix Probe (com vídeo de teste) e gerar pkg.gp4
+      - name: Compilar o PurpleFlix Probe e gerar pkg.gp4
         continue-on-error: true
         run: |
           set -e
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -y -hide_banner -loglevel error \
-            -f lavfi -i "testsrc2=size=1280x720:rate=30" \
-            -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-            -t 6 -c:v libx264 -profile:v high -level 4.0 -pix_fmt yuv420p -b:v 2M \
-            -c:a aac -b:a 128k -ac 2 -movflags +faststart teste.mp4
-          ls -l teste.mp4
           rm -f eboot.bin pkg.gp4 sce_sys/param.sfo
           make INTDIR=build-probe SRCDIR=probe PROJ=probe \
             TITLE='PurpleFlix Probe' VERSION=01.00 TITLE_ID=PFLX00003 \
@@ -127,17 +130,3 @@ jobs:
         with:
           name: PurpleFlix-PS4-pkg
           path: dist/
-      - name: Exportar referências de áudio
-        run: |
-          TC="$OO_PS4_TOOLCHAIN"
-          OUT="$GITHUB_WORKSPACE/refs-audio"
-          mkdir -p "$OUT"
-          cp "$TC/include/orbis/_types/audio_out.h" "$OUT/" || true
-          cp "$TC/include/orbis/_types/user.h" "$OUT/" || true
-          ls -l "$OUT"
-
-      - name: Enviar referências de áudio
-        uses: actions/upload-artifact@v4
-        with:
-          name: referencias-audio
-          path: refs-audio/
