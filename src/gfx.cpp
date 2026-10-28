@@ -11,6 +11,7 @@
 namespace {
 
 SDL_Renderer* g_r = nullptr;
+SDL_Surface* g_surf = nullptr;
 
 enum Accent { A_NONE, A_ACUTE, A_GRAVE, A_CIRC, A_TILDE, A_CEDIL };
 struct Ch {
@@ -64,7 +65,7 @@ inline bool isLower(char b) { return b >= 'a' && b <= 'z'; }
 
 int pixelSize(char b, int s) {
     if (isLower(b)) {
-        int p = s - s / 4;  // minúscula = versalete (75%)
+        int p = s - s / 4;  // minuscula = versalete (75%)
         return p < 1 ? 1 : p;
     }
     return s;
@@ -97,6 +98,25 @@ void drawChar(int x, int y, const Ch& ch, int s, Color col) {
     }
 }
 
+// Preenche um retangulo direto na superficie (32 bits por pixel).
+void fillSurface(int x, int y, int w, int h, Color c) {
+    if (!g_surf || !g_surf->pixels || g_surf->format->BytesPerPixel != 4) return;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > g_surf->w ? g_surf->w : x + w;
+    int y1 = y + h > g_surf->h ? g_surf->h : y + h;
+    if (x0 >= x1 || y0 >= y1) return;
+    // Transparencia: escurece contra preto (rapido, e identico sobre fundo preto).
+    Uint8 r = (Uint8)((int)c.r * c.a / 255);
+    Uint8 g = (Uint8)((int)c.g * c.a / 255);
+    Uint8 b = (Uint8)((int)c.b * c.a / 255);
+    Uint32 px = SDL_MapRGB(g_surf->format, r, g, b);
+    for (int j = y0; j < y1; ++j) {
+        Uint32* row = (Uint32*)((Uint8*)g_surf->pixels + (size_t)j * g_surf->pitch) + x0;
+        for (int i = 0; i < x1 - x0; ++i) row[i] = px;
+    }
+}
+
 }  // namespace
 
 void gfx::init(SDL_Renderer* r) {
@@ -104,7 +124,13 @@ void gfx::init(SDL_Renderer* r) {
     SDL_SetRenderDrawBlendMode(g_r, SDL_BLENDMODE_BLEND);
 }
 
+void gfx::setSurface(SDL_Surface* s) { g_surf = s; }
+
 void gfx::rect(int x, int y, int w, int h, Color c) {
+    if (g_surf) {
+        fillSurface(x, y, w, h, c);
+        return;
+    }
     SDL_SetRenderDrawColor(g_r, c.r, c.g, c.b, c.a);
     SDL_Rect rc = {x, y, w, h};
     SDL_RenderFillRect(g_r, &rc);
