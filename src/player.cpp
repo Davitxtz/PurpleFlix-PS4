@@ -476,10 +476,20 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
 
     SDL_Window* win = SDL_GetWindowFromID(1);  // a janela do app e a primeira criada (confirmado no log)
     SDL_Surface* ws = win ? SDL_GetWindowSurface(win) : nullptr;
+        // A ordem dos bytes vem das mascaras (cobre ABGR8888, BGR888, ARGB8888 e RGB888).
+    bool orderRgb = ws && ws->format && ws->format->Rmask == 0x000000FFu && ws->format->Gmask == 0x0000FF00u &&
+                    ws->format->Bmask == 0x00FF0000u;  // bytes R,G,B,x
+    bool orderBgr = ws && ws->format && ws->format->Rmask == 0x00FF0000u && ws->format->Gmask == 0x0000FF00u &&
+                    ws->format->Bmask == 0x000000FFu;  // bytes B,G,R,x
     bool direct = ws && ws->pixels && ws->format && ws->format->BytesPerPixel == 4 && ws->w == W && ws->h == H &&
-                  (ws->format->format == SDL_PIXELFORMAT_ABGR8888 || ws->format->format == SDL_PIXELFORMAT_ARGB8888);
-    bool bgra = direct && ws->format->format == SDL_PIXELFORMAT_ARGB8888;
-    {
+                  (orderRgb || orderBgr);
+    bool bgra = direct && orderBgr;
+    if (ws && ws->format) {
+        logHex("superficie: Rmask", ws->format->Rmask);
+        logHex("superficie: Gmask", ws->format->Gmask);
+        logHex("superficie: Bmask", ws->format->Bmask);
+        logHex("superficie: Amask", ws->format->Amask);
+    }
         char b[200];
         snprintf(b, sizeof b, "superficie da janela: %s, modo %s",
                  ws && ws->format ? SDL_GetPixelFormatName(ws->format->format) : "indisponivel",
