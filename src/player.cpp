@@ -476,7 +476,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
 
     SDL_Window* win = SDL_GetWindowFromID(1);  // a janela do app e a primeira criada (confirmado no log)
     SDL_Surface* ws = win ? SDL_GetWindowSurface(win) : nullptr;
-        // A ordem dos bytes vem das mascaras (cobre ABGR8888, BGR888, ARGB8888 e RGB888).
+    // A ordem dos bytes vem das mascaras (cobre ABGR8888, BGR888, ARGB8888 e RGB888).
     bool orderRgb = ws && ws->format && ws->format->Rmask == 0x000000FFu && ws->format->Gmask == 0x0000FF00u &&
                     ws->format->Bmask == 0x00FF0000u;  // bytes R,G,B,x
     bool orderBgr = ws && ws->format && ws->format->Rmask == 0x00FF0000u && ws->format->Gmask == 0x0000FF00u &&
@@ -490,6 +490,7 @@ bool player::run(SDL_Renderer* ren, const char* path, const char* title, char* e
         logHex("superficie: Bmask", ws->format->Bmask);
         logHex("superficie: Amask", ws->format->Amask);
     }
+    {
         char b[200];
         snprintf(b, sizeof b, "superficie da janela: %s, modo %s",
                  ws && ws->format ? SDL_GetPixelFormatName(ws->format->format) : "indisponivel",
